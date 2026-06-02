@@ -1,0 +1,11 @@
+# Python local environments
+.venv/
+__pycache__/
+*.pyc
+
+# Rust build files
+target/
+**/*.rs.bk
+
+# Environment secrets
+.env
