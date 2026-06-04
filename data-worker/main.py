@@ -59,16 +59,23 @@ def process_flux_pipeline(
         # Hum har 10 points ka median lekar binned object banayenge
         binned_lc = flat_lc.bin(time_bin_size=0.1)
 
-        # --- FIX STARTS HERE: Filter out NaN values ---
-        raw_time = binned_lc.time.value
-        raw_flux = binned_lc.flux.value
+        # --- FIXED PIPELINE LAYER: Multi-Array NaN Purge ---
+        # Direct numpy level primitive numeric arrays extract karna
+        raw_time = np.array(binned_lc.time.value, dtype=np.float64)
+        raw_flux = np.array(binned_lc.flux.value, dtype=np.float64)
 
-        # NumPy's logical_not aur isnan ka use karke sirf wahi indices nikalenge jo NaN nahi hain
-        nan_mask = np.logical_not(np.isnan(raw_flux))
+        # 1. Flux aur Time dono ke liye alag alag checks lagana taaki safety 100% ho
+        valid_flux_mask = ~np.isnan(raw_flux) & ~np.isinf(raw_flux)
+        valid_time_mask = ~np.isnan(raw_time) & ~np.isinf(raw_time)
         
-        clean_time_array = raw_time[nan_mask].tolist()
-        clean_flux_array = raw_flux[nan_mask].tolist()
-        # --- FIX ENDS HERE --- 
+        # 2. Combined Bitwise Intersection Mask (Dono valid hone chahiye)
+        strict_mask = valid_flux_mask & valid_time_mask
+        
+        # 3. Vectorized numpy filtering aur direct Python native float casting
+        # Isse clean_flux_array me bache hue elements pure floats honge, koi metadata types nahi
+        clean_time_array = [float(x) for x in raw_time[strict_mask]]
+        clean_flux_array = [float(x) for x in raw_flux[strict_mask]]
+        # --- FIXED PIPELINE LAYER END ---
         
         # Step 7: Rust Physics Engine ke liye metadata (Constants) extract karna
         # FITS headers se stellar properties nikalna
@@ -86,8 +93,10 @@ def process_flux_pipeline(
                 "total_processed_points": len(flat_lc.time.value)
             },
             "scientific_arrays": {
-                "time": binned_lc.time.value.tolist(),       # X-axis for graph
-                "flux": binned_lc.flux.value.tolist()        # Y-axis for graph
+                # "time": binned_lc.time.value.tolist(),       # X-axis for graph
+                # "flux": binned_lc.flux.value.tolist()        # Y-axis for graph
+                "time": clean_time_array,       #  Ab yahan clean array pass hoga
+                "flux": clean_flux_array
             }
         }
         
