@@ -18,28 +18,38 @@ export default function OrbitSimulator({ targetMetadata, currentFrameTime, onFra
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [wasmEngine, setWasmEngine] = useState<any>(null);
 
-  // 1. DYNAMIC WASM MODULE ASYNC LOADING BOUNDARY
+  // 1. DYNAMIC WASM MODULE ASYNC LOADING BOUNDARY WITH EXPLICIT INITIALIZATION
   useEffect(() => {
     // Dynamic import to comply with Next.js client-side module hydration bounds
-    import("@/core-simulator-wasm").then((module) => {
-      setWasmEngine(module);
-      
-      // Verification Handshake execution check inside browser logs
-      const handshakePayload = {
-        star_mass_solar: targetMetadata.star_mass_solar,
-        star_radius_solar: targetMetadata.star_radius_solar,
-        orbital_period_days: targetMetadata.orbital_period_days,
-        semi_major_axis_au: targetMetadata.semi_major_axis_au,
-        eccentricity: targetMetadata.eccentricity,
-      };
-      
-      const confirmMsg = module.astroflux_handshake(handshakePayload);
-      console.log(`[WASM Core Handshake]: ${confirmMsg}`);
-    }).catch(err => console.error("Failed to load Rust WASM Engine:", err));
+    import("@/core-simulator-wasm").then(async (module) => {
+      try {
+        // --- FIXED LAYER: Triggering explicit WASM instance initialization ---
+        // Kyunki humne --target web use kiya hai, hume core initialization method await karna hoga
+        await module.default(); 
+        // --- FIXED LAYER END ---
+
+        setWasmEngine(module);
+        
+        // Verification Handshake execution check inside browser logs
+        const handshakePayload = {
+          star_mass_solar: targetMetadata.star_mass_solar,
+          star_radius_solar: targetMetadata.star_radius_solar,
+          orbital_period_days: targetMetadata.orbital_period_days,
+          semi_major_axis_au: targetMetadata.semi_major_axis_au,
+          eccentricity: targetMetadata.eccentricity,
+        };
+        
+        const confirmMsg = module.astroflux_handshake(handshakePayload);
+        console.log(`[WASM Core Handshake]: ${confirmMsg}`);
+      } catch (initErr) {
+        console.error("Error during WASM Engine Binary Instance Initialization:", initErr);
+      }
+    }).catch(err => console.error("Failed to load Rust WASM Engine Wrapper:", err));
   }, [targetMetadata]);
 
   // 2. THE 60 FPS CANVAS RENDERING LOOP MATRIX
   useEffect(() => {
+    // Safety guard add kiya taaki jab tak engine fully initialized na ho, tab tak loop access na kare
     if (!wasmEngine || !canvasRef.current) return;
 
     const canvas = canvasRef.current;
