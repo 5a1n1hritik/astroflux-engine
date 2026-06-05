@@ -1,7 +1,7 @@
 use wasm_bindgen::prelude::*;
 use serde::{Serialize, Deserialize};
 
-// 1. Static Parameters Model (Next.js Database Wrapper inputs match matrix)
+// 1. Static Parameters Model 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct OrbitConstants {
     pub star_mass_solar: f64,
@@ -24,11 +24,10 @@ pub struct SimulationState {
 // 3. WebAssembly Interaction Handshake Check
 #[wasm_bindgen]
 pub fn astroflux_handshake(js_config: JsValue) -> Result<JsValue, JsValue> {
-    // Parsing the JSON input coming directly from Next.js Client Side
-    let constants: OrbitConstants = serde_json::from_value(js_config)
-        .map_err(|e| JsValue::from_str(&format!("Serde Deserialization Error: {}", e)))?;
+    // FIX: Using serde_wasm_bindgen to smoothly deserialize direct JsValue components
+    let constants: OrbitConstants = serde_wasm_bindgen::from_value(js_config)
+        .map_err(|e| JsValue::from_str(&format!("WASM Deserialization Error: {}", e)))?;
         
-    // Testing system variables logs mapping values logic
     let confirmation_msg = format!(
         "Rust WASM Engine Connected. Target System Parameters Locked -> Mass: {} Solar, Period: {} Days",
         constants.star_mass_solar, constants.orbital_period_days
