@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import OrbitSimulator from "@/components/OrbitSimulator";
-import FluxChart, { type FluxChartHandle } from "@/components/FluxChart";
+import FluxChart, { type FluxChartHandle } from "@/components/charts/flux";
 
 // ── IMPORT MODULAR HUD COMPONENTS (SRP COMPLIANT) ───────────────────────────
 import HeaderToken from "@/components/hud/HeaderToken";
