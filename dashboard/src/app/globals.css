@@ -1,26 +1,446 @@
 @import "tailwindcss";
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+   ASTROFLUX ENGINE — DESIGN SYSTEM
+   Cinematic scientific portal. NASA Eyes on Exoplanets × SpaceX.
+   Target: researchers, not gamers. Precision over decoration.
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. DESIGN TOKENS ─────────────────────────────────────────────────────────
+   All colors, blurs, and spacing defined as CSS variables.
+   Use these everywhere — never hardcode hex values in components.
+   ─────────────────────────────────────────────────────────────────────────── */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Void: the true background — deeper than slate-950 */
+  --color-void: #020409;
+
+  /* Cyan spectrum — primary accent for active states, cursors, orbit lines */
+  --color-cyan-bright:  #22d3ee;   /* Active cursor, live markers            */
+  --color-cyan-mid:     #0891b2;   /* Orbit track, grid lines                */
+  --color-cyan-dim:     rgba(8, 145, 178, 0.15); /* Subtle fills             */
+
+  /* Emerald — telemetry values, confirmed data, "online" indicators */
+  --color-emerald:      #34d399;
+  --color-emerald-dim:  rgba(52, 211, 153, 0.12);
+
+  /* Amber — warning states, pause mode */
+  --color-amber:        #fbbf24;
+  --color-amber-dim:    rgba(251, 191, 36, 0.12);
+
+  /* Stellar — the host star's chromatic signature */
+  --color-stellar:      #fde68a;
+  --color-stellar-core: #fef3c7;
+
+  /* Text hierarchy */
+  --color-text-primary:   rgba(226, 232, 240, 0.95);  /* slate-200 equiv      */
+  --color-text-secondary: rgba(148, 163, 184, 0.80);  /* slate-400 equiv      */
+  --color-text-muted:     rgba(71, 85, 105, 0.90);    /* slate-600 equiv      */
+  --color-text-label:     rgba(100, 116, 139, 0.70);  /* dim labels           */
+
+  /* Glass panel system — the core of the overlay aesthetic */
+  --glass-bg:           rgba(2, 4, 9, 0.55);          /* Panel fill           */
+  --glass-bg-hover:     rgba(2, 4, 9, 0.70);
+  --glass-border:       rgba(226, 232, 240, 0.06);    /* Hairline borders     */
+  --glass-border-hover: rgba(34, 211, 238, 0.20);
+  --glass-blur:         blur(24px);
+  --glass-blur-heavy:   blur(40px);
+
+  /* Glow shadows — used on interactive elements */
+  --glow-cyan:    0 0 20px rgba(34, 211, 238, 0.25), 0 0 60px rgba(34, 211, 238, 0.08);
+  --glow-emerald: 0 0 20px rgba(52, 211, 153, 0.20);
+  --glow-stellar: 0 0 40px rgba(253, 230, 138, 0.30), 0 0 120px rgba(253, 230, 138, 0.10);
+
+  /* Spacing scale — used for HUD positioning offsets */
+  --hud-margin: 28px;           /* Distance from viewport edge to HUD panels  */
+  --hud-gap:    16px;           /* Gap between stacked HUD rows               */
+
+  /* Typography */
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-mono:    "Space Mono", "Courier New", monospace;
 }
 
+/* ── 2. TAILWIND THEME EXTENSIONS ────────────────────────────────────────────
+   Extend Tailwind's theme inline so you can use bg-void, font-display, etc.
+   ─────────────────────────────────────────────────────────────────────────── */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-void:           var(--color-void);
+  --color-cyan-bright:    var(--color-cyan-bright);
+  --color-cyan-mid:       var(--color-cyan-mid);
+  --color-emerald-sci:    var(--color-emerald);
+  --color-stellar:        var(--color-stellar);
+  --font-sans:            var(--font-display);
+  --font-mono:            var(--font-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* ── 3. BASE RESET — FULL-SCREEN CANVAS FOUNDATION ──────────────────────────
+   This is the most critical section for the immersive layout.
+   html and body must be exactly viewport-sized with zero overflow.
+   ─────────────────────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;          /* ← Prevents any scrollbar from appearing       */
+  background: var(--color-void);
+  color: var(--color-text-primary);
+  font-family: var(--font-display);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── 4. SELECTION COLOR ───────────────────────────────────────────────────── */
+::selection {
+  background: rgba(34, 211, 238, 0.25);
+  color: #e2e8f0;
+}
+
+/* ── 5. SCROLLBAR SUPPRESSION (for any overflow-y: auto panels internally) ── */
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(34, 211, 238, 0.20);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(34, 211, 238, 0.40); }
+
+/* ── 6. CANVAS ROOT LAYER ────────────────────────────────────────────────────
+   #canvas-root is the WebGL world — it lives at the absolute base of the stack.
+   Three.js will appendChild its <canvas> here in Step 2.
+   ─────────────────────────────────────────────────────────────────────────── */
+#canvas-root {
+  position: fixed;
+  inset: 0;
+  z-index: 0;                 /* ← Base layer: always behind all HUD overlays  */
+  width: 100%;
+  height: 100%;
+  pointer-events: auto;       /* ← Allow orbit controls, mouse interaction      */
+}
+
+#canvas-root canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* ── 7. HUD OVERLAY LAYER ────────────────────────────────────────────────────
+   #hud-root is the container for all floating UI panels.
+   It sits above the canvas but passes pointer events through by default,
+   letting individual panels re-enable them selectively.
+   ─────────────────────────────────────────────────────────────────────────── */
+#hud-root {
+  position: fixed;
+  inset: 0;
+  z-index: 10;                /* ← Above WebGL canvas, below any modal/tooltip  */
+  pointer-events: none;       /* ← Transparent to mouse by default              */
+}
+
+/* All direct HUD panel children re-enable pointer events */
+#hud-root > * {
+  pointer-events: auto;
+}
+
+/* ── 8. GLASSMORPHISM PANEL — UTILITY CLASS ──────────────────────────────────
+   The core visual language. All floating panels use .glass-panel.
+   ─────────────────────────────────────────────────────────────────────────── */
+.glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  transition: border-color 0.3s ease, background 0.3s ease;
+}
+
+.glass-panel:hover {
+  border-color: var(--glass-border-hover);
+}
+
+.glass-panel--heavy {
+  backdrop-filter: var(--glass-blur-heavy);
+  -webkit-backdrop-filter: var(--glass-blur-heavy);
+  background: rgba(2, 4, 9, 0.72);
+}
+
+/* ── 9. TELEMETRY ROW — DATA DISPLAY PATTERN ─────────────────────────────────
+   Used for key/value pairs in the telemetry HUD.
+   ─────────────────────────────────────────────────────────────────────────── */
+.telemetry-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.telemetry-row:last-child {
+  border-bottom: none;
+}
+
+.telemetry-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-label);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.telemetry-value {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-primary);
+  text-align: right;
+}
+
+.telemetry-value--accent {
+  color: var(--color-emerald);
+}
+
+.telemetry-value--cyan {
+  color: var(--color-cyan-bright);
+}
+
+/* ── 10. STATUS INDICATOR — PULSING ONLINE DOT ───────────────────────────────*/
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-emerald);
+  box-shadow: 0 0 8px var(--color-emerald);
+  animation: pulse-status 2.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.status-dot--amber {
+  background: var(--color-amber);
+  box-shadow: 0 0 8px var(--color-amber);
+}
+
+@keyframes pulse-status {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.5; transform: scale(0.85); }
+}
+
+/* ── 11. HUD SECTION HEADER ──────────────────────────────────────────────────*/
+.hud-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+/* ── 12. SCAN LINE DIVIDER ───────────────────────────────────────────────────
+   A subtle visual separator used between HUD sections.
+   ─────────────────────────────────────────────────────────────────────────── */
+.hud-divider {
+  width: 100%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--glass-border) 30%,
+    var(--glass-border) 70%,
+    transparent 100%
+  );
+  margin: 10px 0;
+}
+
+/* ── 13. BUTTON: PRIMARY ACTION ──────────────────────────────────────────────*/
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 18px;
+  border-radius: 8px;
+  border: 1px solid rgba(34, 211, 238, 0.30);
+  background: rgba(34, 211, 238, 0.08);
+  color: var(--color-cyan-bright);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: rgba(34, 211, 238, 0.15);
+  border-color: rgba(34, 211, 238, 0.55);
+  box-shadow: var(--glow-cyan);
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.btn-primary:disabled {
+  opacity: 0.40;
+  cursor: not-allowed;
+}
+
+/* ── 14. BUTTON: TOGGLE (PLAY/PAUSE) ─────────────────────────────────────────*/
+.btn-toggle {
+  width: 100%;
+  padding: 9px 0;
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+.btn-toggle--playing {
+  background: var(--color-amber-dim);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  color: var(--color-amber);
+}
+
+.btn-toggle--playing:hover {
+  background: rgba(251, 191, 36, 0.18);
+  box-shadow: 0 0 20px rgba(251, 191, 36, 0.15);
+}
+
+.btn-toggle--paused {
+  background: var(--color-emerald-dim);
+  border: 1px solid rgba(52, 211, 153, 0.25);
+  color: var(--color-emerald);
+}
+
+.btn-toggle--paused:hover {
+  background: rgba(52, 211, 153, 0.18);
+  box-shadow: var(--glow-emerald);
+}
+
+/* ── 15. INPUT: STAR TARGET FIELD ────────────────────────────────────────────*/
+.input-target {
+  background: rgba(2, 4, 9, 0.80);
+  border: 1px solid var(--glass-border);
+  color: var(--color-cyan-bright);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border-radius: 8px;
+  padding: 8px 14px;
+  outline: none;
+  width: 100%;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  caret-color: var(--color-cyan-bright);
+}
+
+.input-target::placeholder {
+  color: var(--color-text-muted);
+  opacity: 0.6;
+}
+
+.input-target:focus {
+  border-color: rgba(34, 211, 238, 0.45);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.07), inset 0 0 12px rgba(34, 211, 238, 0.03);
+}
+
+/* ── 16. FLUX CHART PANEL — BOTTOM STRIP ─────────────────────────────────────
+   The chart sits at the bottom, spanning most of the screen width.
+   It's wider and shorter than the other panels.
+   ─────────────────────────────────────────────────────────────────────────── */
+.chart-panel {
+  position: absolute;
+  bottom: var(--hud-margin);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(820px, calc(100vw - var(--hud-margin) * 2));
+  z-index: 10;
+}
+
+/* ── 17. LOADING VEIL ────────────────────────────────────────────────────────
+   Full-screen overlay shown while the initial data pipeline is fetching.
+   ─────────────────────────────────────────────────────────────────────────── */
+.loading-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--color-void);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+}
+
+/* ── 18. SPINNER ─────────────────────────────────────────────────────────────*/
+.spinner {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid rgba(34, 211, 238, 0.12);
+  border-top-color: var(--color-cyan-bright);
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 19. WORDMARK / BRANDING ─────────────────────────────────────────────────*/
+.wordmark {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  background: linear-gradient(120deg, var(--color-cyan-bright) 0%, #a5f3fc 50%, var(--color-stellar) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.wordmark-sub {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.20em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+/* ── 20. CORNER BRACKET DECORATION ──────────────────────────────────────────
+   Subtle L-shaped brackets in HUD panel corners — a nod to targeting reticles.
+   Applied with ::before and ::after via the .bracketed class.
+   ─────────────────────────────────────────────────────────────────────────── */
+.bracketed {
+  position: relative;
+}
+
+.bracketed::before,
+.bracketed::after {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-color: rgba(34, 211, 238, 0.25);
+  border-style: solid;
+  pointer-events: none;
+}
+
+.bracketed::before {
+  top: 6px;
+  left: 6px;
+  border-width: 1px 0 0 1px;
+}
+
+.bracketed::after {
+  bottom: 6px;
+  right: 6px;
+  border-width: 0 1px 1px 0;
 }
