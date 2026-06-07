@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import OrbitSimulator from "@/components/OrbitSimulator";
-import FluxChart from "@/components/FluxChart";
+import FluxChart, { type FluxChartHandle } from "@/components/FluxChart";
 
 export default function Home() {
   const [targetName, setTargetName] = useState("Kepler-452");
@@ -11,6 +11,7 @@ export default function Home() {
   const [timeCounter, setTimeCounter] = useState(0.0);
   const [livePhaseAngle, setLivePhaseAngle] = useState(0.0);
   const [isPlaying, setIsPlaying] = useState(true);
+  const fluxChartRef = useRef<FluxChartHandle>(null);
 
   // 1. DATA ACQUISITION FROM NEXT GATEWAY ROUTE
   const triggerSpacePipeline = async () => {
@@ -70,7 +71,10 @@ export default function Home() {
               eccentricity: 0.15,
             }}
             currentFrameTime={timeCounter}
-            onFrameUpdate={(phase) => setLivePhaseAngle(phase)}
+            onFrameUpdate={(phase) => {
+             fluxChartRef.current?.setPhase(phase);
+             setLivePhaseAngle(phase);
+           }}
           />
         )}
       </div>
@@ -219,10 +223,11 @@ export default function Home() {
         {systemData && (
           <div className="chart-panel glass-panel">
             <FluxChart
-              timeArray={systemData.scientific_arrays.time}
-              fluxArray={systemData.scientific_arrays.flux}
-              currentPhaseAngle={livePhaseAngle}
-            />
+             ref={fluxChartRef}
+             timeArray={systemData.scientific_arrays.time}
+             fluxArray={systemData.scientific_arrays.flux}
+             currentPhaseAngle={livePhaseAngle}
+           />
           </div>
         )}
 
