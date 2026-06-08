@@ -1,6 +1,10 @@
 import type { Metadata } from "next";
-import { Space_Grotesk, Space_Mono } from "next/font/google";
+import { Space_Grotesk, Space_Mono, Geist } from "next/font/google";
 import "./globals.css";
+import { cn } from "@/lib/utils";
+
+const geist = Geist({subsets:['latin'],variable:'--font-sans'});
+
 
 // ── Typography System ──────────────────────────────────────────────────────────
 // Space Grotesk: UI labels, values, headings — sharp, technical, geometric
@@ -31,7 +35,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${spaceGrotesk.variable} ${spaceMono.variable}`}
+      className={cn(spaceGrotesk.variable, spaceMono.variable, "font-sans", geist.variable)}
     >
       <body className="h-full overflow-hidden bg-void text-slate-100 antialiased">
         {children}

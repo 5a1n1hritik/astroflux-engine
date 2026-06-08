@@ -4,382 +4,712 @@
  * index.tsx
  * src/components/charts/flux/index.tsx
  * ─────────────────────────────────────────────────────────────────────────────
- * Core Orchestrator — the single exported FluxChart component.
- *
- * SRP: Owns the scrollable container, coordinates the two canvas layers,
- * and runs the scroll-sync engine. No drawing logic lives here.
- *
- * ── COMPONENT TREE ───────────────────────────────────────────────────────────
- *
- *   <div.chart-outer>               ← glass panel, fixed visible height
- *     <header />                    ← label strip, legend chip (no state)
- *     <div.scroll-viewport>         ← overflow-x: scroll, scroll-snap: none
- *       <div.canvas-stack>          ← position:relative, width = canvasW
- *         <FluxStaticLayer />       ← z:0, absolute, drawn once per data
- *         <FluxMarkerLayer />       ← z:1, absolute, 60fps rAF loop
- *       </div>
- *     </div>
- *   </div>
- *
- * ── SCROLL-SYNC ENGINE ───────────────────────────────────────────────────────
- *
- * The scroll engine runs inside a rAF loop (separate from the marker loop).
- * Every tick:
- *   1. Read phaseRef.current (latest phase from Three.js — no React involved)
- *   2. Compute target marker X in canvas coordinates:
- *        norm     = phase / 2π
- *        markerX  = PAD.left + norm × geometry.pw
- *   3. Compute target scrollLeft so markerX lands at the viewport center:
- *        targetScroll = markerX - viewportW × MARKER_LOCK_FRACTION
- *   4. Lerp current scrollLeft toward targetScroll:
- *        scrollLeft += (targetScroll - scrollLeft) × SCROLL_LERP_FACTOR
- *
- * The lerp factor (0.06) gives buttery smooth scroll momentum — the curve
- * slides behind the fixed scanline like a physical tape reader.
- *
- * ── FORWARDREF CONTRACT ──────────────────────────────────────────────────────
- *   ref.setPhase(radians) — called by OrbitSimulator's onFrameUpdate,
- *   60× per second. Writes to phaseRef only. Zero React re-renders.
- *
- * ── RESIZE HANDLING ──────────────────────────────────────────────────────────
- *   ResizeObserver watches the scroll viewport. On size change:
- *     1. Calls staticLayerRef.redraw() → recomputes geometry for new width
- *     2. Calls markerLayerRef.resize(canvasW) → syncs marker canvas size
+ * Unified FluxChart orchestrator — Recharts-powered scientific light-curve
+ * viewer. Fixed all TypeScript union type complexities [ts(2590), ts(2322)].
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
 import {
+  useState,
   useEffect,
   useRef,
   useCallback,
+  useMemo,
   forwardRef,
   useImperativeHandle,
+  memo,
 } from "react";
-import FluxStaticLayer, { type FluxStaticLayerHandle } from "./FluxStaticLayer";
-import FluxMarkerLayer, { type FluxMarkerLayerHandle } from "./FluxMarkerLayer";
 import {
-  PAD, CANVAS_H, MARKER_LOCK_FRACTION, EMPTY_GEOMETRY,
-  type FluxChartProps, type FluxChartHandle, type PlotGeometry,
-} from "./types";
+  ComposedChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ReferenceLine,
+  ResponsiveContainer,
+} from "recharts";
 
-// ── Scroll-sync lerp factor ───────────────────────────────────────────────────
-// Lower = smoother/slower follow. 0.06 gives a "tape reader" momentum feel.
-// Range: 0.02 (very slow) — 0.20 (near-instant)
-const SCROLL_LERP_FACTOR = 0.06;
+// ── Public API ─────────────────────────────────────────────────────────────────
 
-// ── Component ─────────────────────────────────────────────────────────────────
+export interface FluxChartProps {
+  timeArray:         number[];
+  fluxArray:         number[];
+  /** Cold-start initializer. Hot-path updates via FluxChartHandle.setPhase() */
+  currentPhaseAngle: number;
+}
+
+export interface FluxChartHandle {
+  /** Called 60×/sec by OrbitSimulator — zero React re-renders */
+  setPhase: (radians: number) => void;
+}
+
+// ── Constants ──────────────────────────────────────────────────────────────────
+
+const TWO_PI = 2 * Math.PI;
+
+/** Transit dip zone half-width in normalized phase [0,1] space */
+const TRANSIT_HALF_WIDTH = 0.04;
+
+/** Phase at which transit center occurs (normalized [0,1]) */
+const TRANSIT_CENTER_NORM = 0.5; // phase = π
+
+/** Zoom levels — stride multipliers for decimation */
+const ZOOM_LEVELS = [1, 2, 3, 4] as const;
+type ZoomLevel = (typeof ZOOM_LEVELS)[number];
+
+/** Max data points sent to Recharts before decimation kicks in */
+const MAX_RENDER_POINTS = 800;
+
+// ── Types ──────────────────────────────────────────────────────────────────────
+
+interface ChartPoint {
+  /** Normalized phase [0, 1] — maps to X axis */
+  phase:        number;
+  /** Raw F/F₀ float from pipeline */
+  flux:         number;
+  /** Amber step-line value — defined only in transit zone, undefined elsewhere */
+  transitEvent: number | undefined;
+  /** Original array index — used for raw-float tooltip reads */
+  srcIdx:       number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPONENT
+// ─────────────────────────────────────────────────────────────────────────────
 
 const FluxChart = forwardRef<FluxChartHandle, FluxChartProps>(
   function FluxChart({ timeArray, fluxArray, currentPhaseAngle }, ref) {
 
-    // ── Refs: layer handles ───────────────────────────────────────────────────
-    const staticLayerRef = useRef<FluxStaticLayerHandle>(null);
-    const markerLayerRef = useRef<FluxMarkerLayerHandle>(null);
+    // ── UI state (only what triggers visual re-renders) ───────────────────────
+    const [expanded,  setExpanded]  = useState(true);
+    const [zoom,      setZoom]      = useState<ZoomLevel>(1);
+    /** Phase for the ReferenceLine — updated by a debounced rAF loop */
+    const [markerPhaseNorm, setMarkerPhaseNorm] = useState(
+      normalizePhase(currentPhaseAngle)
+    );
 
-    // ── Refs: scroll container + canvas stack ─────────────────────────────────
-    const viewportRef   = useRef<HTMLDivElement>(null);   // the scrollable div
-    const stackRef      = useRef<HTMLDivElement>(null);   // position:relative wrapper
+    // ── Mutable refs — hot path, zero re-renders ──────────────────────────────
+    const phaseRef        = useRef<number>(currentPhaseAngle);
+    const rafRef          = useRef<number>(0);
+    const lastMarkerNorm  = useRef<number>(normalizePhase(currentPhaseAngle));
 
-    // ── Shared mutable refs (no React state, survive re-renders) ─────────────
-    const phaseRef    = useRef<number>(currentPhaseAngle);
-    const geometryRef = useRef<PlotGeometry>(EMPTY_GEOMETRY);
-
-    // Current interpolated scrollLeft — maintained between ticks
-    const scrollRef   = useRef<number>(0);
-    const scrollRafRef= useRef<number>(0);
-
-    // ── Sync phaseRef from prop (cold-start / React re-render path) ───────────
-    phaseRef.current = currentPhaseAngle;
-
-    // ── Imperative handle — the Three.js hot path ────────────────────────────
+    // ── Imperative handle: Three.js animation thread entry point ─────────────
     useImperativeHandle(ref, () => ({
       setPhase: (radians: number) => {
         phaseRef.current = radians;
       },
     }), []);
 
-    // ── onGeometryReady: called by FluxStaticLayer after each draw ─────────────
-    // Syncs the marker canvas size and resets the scroll engine position.
-    const onGeometryReady = useCallback((canvasW: number) => {
-      // Resize marker canvas to match static canvas
-      markerLayerRef.current?.resize(canvasW);
-
-      // Resize the canvas stack wrapper so the scroll container knows total width
-      if (stackRef.current) {
-        stackRef.current.style.width  = `${canvasW}px`;
-        stackRef.current.style.height = `${CANVAS_H}px`;
-      }
-    }, []);
-
-    // ── SCROLL-SYNC ENGINE ────────────────────────────────────────────────────
+    // ── Phase marker loop ─────────────────────────────────────────────────────
     useEffect(() => {
       let running = true;
 
-      function syncScroll() {
+      function tick() {
         if (!running) return;
-
-        const viewport  = viewportRef.current;
-        const geometry  = geometryRef.current;
-
-        if (viewport && geometry.pw > 0 && geometry.xPixels.length > 0) {
-          const viewportW = viewport.clientWidth;
-
-          // Phase → target marker X in canvas-space (absolute, not scroll-relative)
-          const TWO_PI = 2 * Math.PI;
-          const phase  = phaseRef.current;
-          const norm   = (((phase % TWO_PI) + TWO_PI) % TWO_PI) / TWO_PI;
-          const n      = geometry.xPixels.length;
-          const idx    = Math.max(0, Math.min(n - 1, Math.round(norm * (n - 1))));
-          const markerX = geometry.xPixels[idx];
-
-          // Target scrollLeft: places markerX at MARKER_LOCK_FRACTION of viewport
-          const targetScroll = markerX - viewportW * MARKER_LOCK_FRACTION;
-          const maxScroll    = geometry.canvasW - viewportW;
-          const clampedTarget = Math.max(0, Math.min(maxScroll, targetScroll));
-
-          // Lerp current scroll toward target — smooth pursuit
-          const current = scrollRef.current;
-          const next    = current + (clampedTarget - current) * SCROLL_LERP_FACTOR;
-          scrollRef.current = next;
-
-          // Direct DOM mutation — bypasses React entirely
-          viewport.scrollLeft = next;
+        const norm = normalizePhase(phaseRef.current);
+        if (Math.abs(norm - lastMarkerNorm.current) > 0.005) {
+          lastMarkerNorm.current = norm;
+          setMarkerPhaseNorm(norm);
         }
-
-        scrollRafRef.current = requestAnimationFrame(syncScroll);
+        rafRef.current = requestAnimationFrame(tick);
       }
 
-      scrollRafRef.current = requestAnimationFrame(syncScroll);
+      rafRef.current = requestAnimationFrame(tick);
       return () => {
         running = false;
-        cancelAnimationFrame(scrollRafRef.current);
+        cancelAnimationFrame(rafRef.current);
       };
-    }, []); // runs for lifetime of component — reads everything via refs
-
-    // ── ResizeObserver: redraws static layer when container resizes ───────────
-    useEffect(() => {
-      const viewport = viewportRef.current;
-      if (!viewport) return;
-
-      const observer = new ResizeObserver(() => {
-        // Trigger full static redraw — geometry will update, then onGeometryReady fires
-        staticLayerRef.current?.redraw();
-      });
-
-      observer.observe(viewport);
-      return () => observer.disconnect();
     }, []);
 
-    // ── Render ────────────────────────────────────────────────────────────────
+    // ── Data pipeline: build chartData ────────────────────────────────────────
+    const { chartData, yDomain, transitBounds } = useMemo(() => {
+      if (timeArray.length === 0 || fluxArray.length === 0) {
+        return { chartData: [], yDomain: [0.99, 1.01] as [number, number], transitBounds: null };
+      }
+
+      const n = Math.min(timeArray.length, fluxArray.length);
+
+      let minF =  Infinity;
+      let maxF = -Infinity;
+      for (let i = 0; i < n; i++) {
+        if (fluxArray[i] < minF) minF = fluxArray[i];
+        if (fluxArray[i] > maxF) maxF = fluxArray[i];
+      }
+      const range  = maxF - minF || 1e-6;
+      const yMin   = minF - range * 0.12;
+      const yMax   = maxF + range * 0.08;
+
+      const sorted    = Float64Array.from(fluxArray.slice(0, n)).sort();
+      const median    = sorted[Math.floor(n / 2)];
+      const threshold = median * 0.9975;
+
+      let dipFirst = -1;
+      let dipLast  = -1;
+      for (let i = 0; i < n; i++) {
+        if (fluxArray[i] < threshold) {
+          if (dipFirst === -1) dipFirst = i;
+          dipLast = i;
+        }
+      }
+
+      const transitC     = dipFirst >= 0
+        ? ((dipFirst + dipLast) * 0.5) / (n - 1)
+        : TRANSIT_CENTER_NORM;
+      const transitHalf  = dipFirst >= 0
+        ? Math.max(0.01, ((dipLast - dipFirst) / (n - 1)) * 0.5 + 0.008)
+        : TRANSIT_HALF_WIDTH;
+      const transitLow   = transitC - transitHalf;
+      const transitHigh  = transitC + transitHalf;
+
+      const stride = Math.max(1, Math.floor(n / (MAX_RENDER_POINTS / zoom)));
+
+      const tMin   = timeArray[0];
+      const tRange = (timeArray[n - 1] - tMin) || 1;
+
+      const points: ChartPoint[] = [];
+      for (let i = 0; i < n; i += stride) {
+        const phaseNorm = (timeArray[i] - tMin) / tRange;
+        const inTransit = phaseNorm >= transitLow && phaseNorm <= transitHigh;
+
+        points.push({
+          phase:        phaseNorm,
+          flux:         fluxArray[i],
+          transitEvent: inTransit ? fluxArray[i] : undefined,
+          srcIdx:       i,
+        });
+      }
+
+      return {
+        chartData:     points,
+        yDomain:       [yMin, yMax] as [number, number],
+        transitBounds: { low: transitLow, high: transitHigh, center: transitC },
+      };
+    }, [timeArray, fluxArray, zoom]);
+
+    const handleZoom = useCallback((z: ZoomLevel) => setZoom(z), []);
+    const toggleExpand = useCallback(() => setExpanded(v => !v), []);
+
+    const formatPhase = useCallback((v: number) => {
+      const labels: Record<string, string> = {
+        "0":    "0",
+        "0.25": "π/2",
+        "0.5":  "π",
+        "0.75": "3π/2",
+        "1":    "2π",
+      };
+      const key = v.toFixed(2);
+      return labels[key] ?? "";
+    }, []);
+
+    const formatFlux = useCallback((v: number) => v.toFixed(4), []);
+
+    // ── Render Ticks directly in SVG workspace to bypass complex type unions ──
+    const renderCustomAxisTick = (props: any) => {
+      const { x, y, payload } = props;
+      return (
+        <g transform={`translate(${x},${y})`}>
+          <text
+            x={0}
+            y={0}
+            dy={12}
+            textAnchor="middle"
+            fill="#cbd5e1"
+            style={{ fontFamily: "'Space Mono', monospace", fontSize: "11px" }}
+          >
+            {props.isYAxis ? formatFlux(payload.value) : formatPhase(payload.value)}
+          </text>
+        </g>
+      );
+    };
+
     return (
       <div
-        aria-label="Flux light curve chart"
+        className="relative w-full rounded-xl border border-white/5 overflow-hidden"
         style={{
-          position:              "relative",
-          width:                 "100%",
-          borderRadius:          12,
-          overflow:              "hidden",
-          background:            "rgba(2, 4, 9, 0.52)",
-          backdropFilter:        "blur(24px)",
-          WebkitBackdropFilter:  "blur(24px)",
-          border:                "1px solid rgba(226, 232, 240, 0.065)",
-          boxShadow: [
-            "inset 0 1px 0 rgba(255,255,255,0.03)",
-            "0 20px 40px rgba(0,0,0,0.40)",
-          ].join(", "),
+          background:           "rgba(2, 4, 9, 0.65)",
+          backdropFilter:       "blur(32px)",
+          WebkitBackdropFilter: "blur(32px)",
+          boxShadow:            "inset 0 1px 0 rgba(255,255,255,0.03), 0 24px 48px rgba(0,0,0,0.45)",
+          transition:           "all 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
         }}
+        aria-label="Flux light curve chart"
       >
-        {/* ── Header strip ──────────────────────────────────────────────────── */}
-        <ChartHeader />
-
-        {/* ── Center-lock indicator ─────────────────────────────────────────── */}
-        {/*
-         * A fixed hairline pin overlaid at the exact center of the scroll
-         * viewport. This is the visual reference that the scanline locks to.
-         * It's a CSS-only element — position:absolute, pointer-events:none.
-         */}
-        <CenterLockPin />
-
-        {/* ── Scrollable viewport ───────────────────────────────────────────── */}
-        <div
-          ref={viewportRef}
-          style={{
-            position:          "relative",
-            overflowX:         "scroll",
-            overflowY:         "hidden",
-            width:             "100%",
-            height:            CANVAS_H,
-            // Hide scrollbar — scroll is fully programmatic, never user-driven
-            scrollbarWidth:    "none",
-            msOverflowStyle:   "none" as React.CSSProperties["msOverflowStyle"],
-          }}
-          // Webkit scrollbar hidden via className below
-          className="flux-no-scrollbar"
-          // Block user scroll — chart position is purely simulation-driven
-          onWheel={(e) => e.preventDefault()}
-          onTouchMove={(e) => e.preventDefault()}
-        >
-          {/* ── Canvas stack: both layers absolutely positioned here ─────────── */}
-          <div
-            ref={stackRef}
-            style={{
-              position:  "relative",
-              // Initial size — overwritten by onGeometryReady after first draw
-              width:     400,
-              height:    CANVAS_H,
-              flexShrink: 0,
-            }}
-          >
-            {/* Layer 0: static — drawn once per data load */}
-            <FluxStaticLayer
-              ref={staticLayerRef}
-              timeArray={timeArray}
-              fluxArray={fluxArray}
-              geometryRef={geometryRef}
-              onGeometryReady={onGeometryReady}
+        {/* ── HEADER ──────────────────────────────────────────────────────── */}
+        <div className="flex items-center justify-between px-4 pt-3 pb-2">
+          <div className="flex items-center gap-2.5">
+            <span
+              className="inline-block rounded-full"
+              style={{
+                width:     5,
+                height:    5,
+                background: "#22d3ee",
+                boxShadow: "0 0 6px #22d3ee",
+                flexShrink: 0,
+              }}
             />
+            <span
+              style={{
+                fontFamily:    "'Space Mono', 'Courier New', monospace",
+                fontSize:      9,
+                letterSpacing: "0.16em",
+                textTransform: "uppercase",
+                color:         "rgba(148, 163, 184, 0.75)",
+              }}
+            >
+              Neural Flux Mapper — Recharts Scientific Layer
+            </span>
+          </div>
 
-            {/* Layer 1: marker — 60fps rAF, reads phaseRef + geometryRef */}
-            <FluxMarkerLayer
-              ref={markerLayerRef}
-              phaseRef={phaseRef}
-              geometryRef={geometryRef}
-            />
+          <div className="flex items-center gap-3">
+            {expanded && (
+              <div className="flex items-center gap-1">
+                {ZOOM_LEVELS.map((z) => (
+                  <button
+                    key={z}
+                    onClick={() => handleZoom(z)}
+                    style={{
+                      fontFamily:    "'Space Mono', monospace",
+                      fontSize:      8,
+                      letterSpacing: "0.10em",
+                      padding:       "2px 7px",
+                      borderRadius:  4,
+                      border:        "1px solid",
+                      cursor:        "pointer",
+                      transition:    "all 0.15s ease",
+                      borderColor:   zoom === z
+                        ? "rgba(34,211,238,0.50)"
+                        : "rgba(255,255,255,0.07)",
+                      background:    zoom === z
+                        ? "rgba(34,211,238,0.10)"
+                        : "rgba(255,255,255,0.02)",
+                      color:         zoom === z ? "#22d3ee" : "rgba(100,116,139,0.80)",
+                    }}
+                    aria-pressed={zoom === z}
+                    aria-label={`Zoom ${z}×`}
+                  >
+                    {z}×
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {expanded && (
+              <div className="flex items-center gap-3">
+                <LegendChip color="#22d3ee" label="F/F₀" />
+                <LegendChip color="#f59e0b" label="Transit" dashed />
+              </div>
+            )}
+
+            <button
+              onClick={toggleExpand}
+              aria-label={expanded ? "Collapse chart" : "Expand chart"}
+              style={{
+                display:        "flex",
+                alignItems:     "center",
+                justifyContent: "center",
+                width:          22,
+                height:         22,
+                borderRadius:   4,
+                border:         "1px solid rgba(255,255,255,0.07)",
+                background:     "rgba(255,255,255,0.02)",
+                cursor:         "pointer",
+                color:          "rgba(148,163,184,0.70)",
+                transition:     "all 0.15s ease",
+                flexShrink:     0,
+              }}
+            >
+              <CollapseIcon expanded={expanded} />
+            </button>
           </div>
         </div>
 
-        {/* Scoped style: hide webkit scrollbar on the viewport */}
-        <style>{`
-          .flux-no-scrollbar::-webkit-scrollbar { display: none; }
-        `}</style>
+        {/* ── CHART AREA ─────────────────────────────────────────────────── */}
+        <div
+          style={{
+            height:     expanded ? 192 : 44,
+            overflow:   "hidden",
+            transition: "height 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
+          }}
+        >
+          {chartData.length === 0 ? (
+            <EmptyState expanded={expanded} />
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart
+                data={chartData}
+                margin={{ top: 8, right: 20, bottom: 20, left: 12 }}
+              >
+                <CartesianGrid
+                  strokeDasharray=""
+                  stroke="rgba(148, 163, 184, 0.04)"
+                  strokeWidth={1}
+                  vertical={false}
+                />
+
+                <XAxis
+                  dataKey="phase"
+                  type="number"
+                  domain={[0, 1]}
+                  ticks={[0, 0.25, 0.5, 0.75, 1]}
+                  tick={renderCustomAxisTick}
+                  axisLine={{ stroke: "rgba(148,163,184,0.25)", strokeWidth: 1 }}
+                  tickLine={{ stroke: "rgba(148,163,184,0.20)", strokeWidth: 1 }}
+                  label={{
+                    value:    "ORBITAL PHASE  φ",
+                    position: "insideBottom",
+                    offset:   -12,
+                    style:    {
+                      fontFamily:    "'Space Mono', monospace",
+                      fontSize:      9,
+                      fill:          "rgba(148,163,184,0.60)",
+                      letterSpacing: "0.14em",
+                      textTransform: "uppercase",
+                    },
+                  }}
+                />
+
+                <YAxis
+                  domain={yDomain}
+                  tick={(props) => renderCustomAxisTick({ ...props, isYAxis: true })}
+                  width={62}
+                  axisLine={{ stroke: "rgba(148,163,184,0.25)", strokeWidth: 1 }}
+                  tickLine={{ stroke: "rgba(148,163,184,0.20)", strokeWidth: 1 }}
+                  label={{
+                    value:   "F / F₀",
+                    angle:   -90,
+                    position:"insideLeft",
+                    offset:  12,
+                    style:   {
+                      fontFamily:    "'Space Mono', monospace",
+                      fontSize:      9,
+                      fill:          "rgba(148,163,184,0.60)",
+                      letterSpacing: "0.10em",
+                    },
+                  }}
+                />
+
+                <Tooltip
+                  content={<FluxTooltip fluxArray={fluxArray} />}
+                  cursor={{
+                    stroke:      "rgba(34,211,238,0.20)",
+                    strokeWidth: 1,
+                    strokeDasharray: "4 4",
+                  }}
+                />
+
+                {transitBounds && (
+                  <>
+                    <ReferenceLine
+                      x={transitBounds.low}
+                      stroke="rgba(251,191,36,0.25)"
+                      strokeWidth={1}
+                      strokeDasharray="3 3"
+                    />
+                    <ReferenceLine
+                      x={transitBounds.high}
+                      stroke="rgba(251,191,36,0.25)"
+                      strokeWidth={1}
+                      strokeDasharray="3 3"
+                    />
+                  </>
+                )}
+
+                <ReferenceLine
+                  x={markerPhaseNorm}
+                  stroke="#22d3ee"
+                  strokeWidth={1}
+                  strokeOpacity={0.75}
+                  label={{
+                    value:    `φ=${(markerPhaseNorm * TWO_PI).toFixed(2)}`,
+                    position: "top",
+                    style:    {
+                      fontFamily: "'Space Mono', monospace",
+                      fontSize:   8,
+                      fill:       "#22d3ee",
+                    },
+                  }}
+                />
+
+                <Line
+                  type="monotone"
+                  dataKey="flux"
+                  stroke="#22d3ee"
+                  strokeWidth={1.2}
+                  dot={false}
+                  activeDot={{ r: 3, fill: "#22d3ee", stroke: "rgba(34,211,238,0.30)", strokeWidth: 6 }}
+                  isAnimationActive={false}
+                  connectNulls
+                />
+
+                <Line
+                  type="stepAfter"
+                  dataKey="transitEvent"
+                  stroke="#f59e0b"
+                  strokeWidth={1.4}
+                  strokeDasharray="5 3"
+                  dot={false}
+                  activeDot={false}
+                  isAnimationActive={false}
+                  connectNulls={false}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+
+        {!expanded && (
+          <CollapsedStrip markerPhaseNorm={markerPhaseNorm} />
+        )}
       </div>
     );
   }
 );
 
 FluxChart.displayName = "FluxChart";
-
-// Re-export types so consumers can import from the module root
-export type { FluxChartProps, FluxChartHandle };
 export default FluxChart;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SUB-COMPONENTS — pure, no props, no state
-// ─────────────────────────────────────────────────────────────────────────────
+// ── UTILITIES ─────────────────────────────────────────────────────────────
 
-/** Header strip: title label + transit legend chip */
-function ChartHeader() {
+function normalizePhase(radians: number): number {
+  return (((radians % TWO_PI) + TWO_PI) % TWO_PI) / TWO_PI;
+}
+
+// ── SUB-COMPONENTS ─────────────────────────────────────────────────────────
+
+interface FluxTooltipProps {
+  active?:    boolean;
+  payload?:   Array<{ payload: ChartPoint }>;
+  fluxArray:  number[];
+}
+
+const FluxTooltip = memo(function FluxTooltip({
+  active, payload, fluxArray,
+}: FluxTooltipProps) {
+  if (!active || !payload?.length) return null;
+
+  const point   = payload[0].payload;
+  const rawFlux = fluxArray[point.srcIdx] ?? point.flux;
+  const phaseRad = point.phase * TWO_PI;
+
   return (
     <div
       style={{
-        display:        "flex",
-        alignItems:     "center",
-        justifyContent: "space-between",
-        padding:        "10px 16px 6px",
-        flexShrink:     0,
+        background:    "rgba(2, 4, 9, 0.90)",
+        border:        "1px solid rgba(34, 211, 238, 0.28)",
+        borderRadius:  6,
+        padding:       "8px 11px",
+        boxShadow:     "0 8px 24px rgba(0,0,0,0.50)",
       }}
     >
-      {/* Left: title + status dot */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span
+      <div
+        style={{
+          height:       1,
+          background:   "linear-gradient(90deg, #22d3ee 0%, transparent 100%)",
+          marginBottom: 7,
+          borderRadius: 1,
+        }}
+      />
+      <TooltipRow label="φ" value={`${phaseRad.toFixed(4)} rad`} />
+      <TooltipRow label="F/F₀" value={rawFlux.toFixed(6)} highlight />
+      {point.transitEvent !== undefined && (
+        <TooltipRow label="EVT" value="TRANSIT DIP" amber />
+      )}
+    </div>
+  );
+});
+
+interface TooltipRowProps {
+  label:     string;
+  value:     string;
+  highlight?: boolean;
+  amber?:    boolean;
+}
+
+function TooltipRow({ label, value, highlight, amber }: TooltipRowProps) {
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "baseline", marginBottom: 3 }}>
+      <span
+        style={{
+          fontFamily:    "'Space Mono', monospace",
+          fontSize:      8,
+          color:         "rgba(148,163,184,0.70)",
+          letterSpacing: "0.10em",
+          minWidth:      28,
+        }}
+      >
+        {label}
+      </span>
+      <span
+        style={{
+          fontFamily: "'Space Mono', monospace",
+          fontSize:   10,
+          fontWeight: 700,
+          color:      amber ? "#f59e0b" : highlight ? "#22d3ee" : "#cbd5e1",
+          letterSpacing: "0.04em",
+        }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function LegendChip({
+  color, label, dashed,
+}: { color: string; label: string; dashed?: boolean }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+      <svg width={18} height={6} aria-hidden="true">
+        <line
+          x1={0} y1={3} x2={18} y2={3}
+          stroke={color}
+          strokeWidth={1.5}
+          strokeDasharray={dashed ? "4 3" : undefined}
+          opacity={0.85}
+        />
+      </svg>
+      <span
+        style={{
+          fontFamily:    "'Space Mono', monospace",
+          fontSize:      8,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          color:         "rgba(100,116,139,0.75)",
+        }}
+      >
+        {label}
+      </span>
+    </div>
+  );
+}
+
+function CollapseIcon({ expanded }: { expanded: boolean }) {
+  return (
+    <svg
+      width={10}
+      height={10}
+      viewBox="0 0 10 10"
+      fill="none"
+      aria-hidden="true"
+      style={{ transition: "transform 0.25s ease", transform: expanded ? "rotate(0deg)" : "rotate(180deg)" }}
+    >
+      <polyline
+        points="2,7 5,3 8,7"
+        stroke="currentColor"
+        strokeWidth={1.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function CollapsedStrip({ markerPhaseNorm }: { markerPhaseNorm: number }) {
+  const phaseRad    = markerPhaseNorm * TWO_PI;
+  const inTransit   = Math.abs(markerPhaseNorm - TRANSIT_CENTER_NORM) < TRANSIT_HALF_WIDTH;
+
+  return (
+    <div
+      style={{
+        position:   "absolute",
+        bottom:     0,
+        left:       0,
+        right:      0,
+        height:     44,
+        display:    "flex",
+        alignItems: "center",
+        padding:    "0 16px",
+        gap:        16,
+        borderTop:  "1px solid rgba(255,255,255,0.05)",
+      }}
+    >
+      <span
+        style={{
+          fontFamily:    "'Space Mono', monospace",
+          fontSize:      10,
+          color:         "#22d3ee",
+          letterSpacing: "0.06em",
+        }}
+      >
+        φ = {phaseRad.toFixed(3)} rad
+      </span>
+
+      <span style={{ color: "rgba(71,85,105,0.50)", fontSize: 10 }}>·</span>
+
+      <span
+        style={{
+          fontFamily:    "'Space Mono', monospace",
+          fontSize:      9,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          color:         inTransit ? "#f59e0b" : "rgba(71,85,105,0.60)",
+        }}
+      >
+        {inTransit ? "⬤ TRANSIT ACTIVE" : "○ NOMINAL"}
+      </span>
+
+      <div
+        style={{
+          flex:       1,
+          height:     2,
+          background: "rgba(255,255,255,0.04)",
+          borderRadius: 1,
+          overflow:   "hidden",
+          position:   "relative",
+        }}
+      >
+        <div
           style={{
-            width:        5,
-            height:       5,
-            borderRadius: "50%",
-            background:   "#22d3ee",
-            boxShadow:    "0 0 6px #22d3ee",
-            flexShrink:   0,
+            position:    "absolute",
+            top:         0,
+            left:        0,
+            width:       `${markerPhaseNorm * 100}%`,
+            height:      "100%",
+            background:  "linear-gradient(90deg, rgba(34,211,238,0.40) 0%, #22d3ee 100%)",
+            borderRadius: 1,
+            transition:  "width 0.3s ease",
           }}
         />
-        <span
-          style={{
-            fontFamily:    "var(--font-mono, 'Space Mono', monospace)",
-            fontSize:      8.5,
-            letterSpacing: "0.16em",
-            textTransform: "uppercase",
-            color:         "rgba(71, 85, 105, 0.90)",
-          }}
-        >
-          Neural Flux Mapper — Phase-Locked Tracking
-        </span>
-      </div>
-
-      {/* Right: transit legend + scroll hint */}
-      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-        {/* Transit dip chip */}
-        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-          <span
-            style={{
-              display:      "inline-block",
-              width:        18,
-              height:       5,
-              borderRadius: 2,
-              background:   "rgba(251, 191, 36, 0.30)",
-              border:       "1px solid rgba(251, 191, 36, 0.45)",
-            }}
-          />
-          <span
-            style={{
-              fontFamily:    "var(--font-mono, 'Space Mono', monospace)",
-              fontSize:      7.5,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              color:         "rgba(100, 116, 139, 0.70)",
-            }}
-          >
-            Transit Dip
-          </span>
-        </div>
-
-        {/* Scroll tracking hint */}
-        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-          <span
-            style={{
-              display:      "inline-block",
-              width:        1,
-              height:       10,
-              background:   "rgba(34, 211, 238, 0.55)",
-              boxShadow:    "0 0 4px rgba(34, 211, 238, 0.40)",
-            }}
-          />
-          <span
-            style={{
-              fontFamily:    "var(--font-mono, 'Space Mono', monospace)",
-              fontSize:      7.5,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              color:         "rgba(100, 116, 139, 0.70)",
-            }}
-          >
-            Phase Lock
-          </span>
-        </div>
       </div>
     </div>
   );
 }
 
-/**
- * CenterLockPin
- * A fixed vertical hairline at the horizontal center of the scroll viewport.
- * This is the visual anchor — it never moves. The flux curve scrolls behind it.
- * Uses a top-to-bottom gradient to fade at chart edges, not a hard line.
- */
-function CenterLockPin() {
+function EmptyState({ expanded }: { expanded: boolean }) {
+  if (!expanded) return null;
   return (
     <div
-      aria-hidden="true"
       style={{
-        position:      "absolute",
-        top:           36,           // aligns to PAD.top of chart area
-        bottom:        38,           // aligns to PAD.bottom
-        left:          "50%",
-        transform:     "translateX(-50%)",
-        width:         1,
-        pointerEvents: "none",
-        zIndex:        20,           // above both canvas layers
-        background:    "linear-gradient(180deg, transparent 0%, rgba(34,211,238,0.12) 20%, rgba(34,211,238,0.20) 50%, rgba(34,211,238,0.12) 80%, transparent 100%)",
+        display:        "flex",
+        alignItems:     "center",
+        justifyContent: "center",
+        height:         "100%",
+        gap:            10,
       }}
-    />
+    >
+      <div
+        style={{
+          width:        18,
+          height:       18,
+          borderRadius: "50%",
+          border:       "1.5px solid rgba(34,211,238,0.12)",
+          borderTopColor: "rgba(34,211,238,0.60)",
+          animation:    "spin 0.9s linear infinite",
+        }}
+      />
+      <span
+        style={{
+          fontFamily:    "'Space Mono', monospace",
+          fontSize:      9,
+          letterSpacing: "0.14em",
+          textTransform: "uppercase",
+          color:         "rgba(71,85,105,0.70)",
+        }}
+      >
+        Awaiting flux data stream...
+      </span>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
   );
 }
