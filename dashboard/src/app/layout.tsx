@@ -37,8 +37,10 @@ export default function RootLayout({
       lang="en"
       className={cn(spaceGrotesk.variable, spaceMono.variable, "font-sans", geist.variable)}
     >
-      <body className="h-full overflow-hidden bg-void text-slate-100 antialiased">
+      {/* <body className="h-full overflow-hidden bg-void text-slate-100 antialiased"> */}
+      <body className="min-h-screen w-full bg-void text-slate-100 antialiased overflow-x-hidden">
         {children}
+        {process.env.NODE_ENV === 'production'}
       </body>
     </html>
   );
