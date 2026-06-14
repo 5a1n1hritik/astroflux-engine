@@ -48,6 +48,14 @@ const nextConfig: NextConfig = {
         protocol: "https",
         hostname: "upload.wikimedia.org",
       },
+      {
+        protocol: "https",
+        hostname: "sxcontent9668.azureedge.us",
+      },
+      {
+        protocol: "https",
+        hostname: "assets.mixkit.co",
+      },
     ],
     qualities: [25, 50, 75, 90, 100],
   },
