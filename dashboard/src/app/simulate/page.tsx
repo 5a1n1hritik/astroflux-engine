@@ -1,16 +1,33 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import OrbitSimulator from "@/components/OrbitSimulator";
-import FluxChart, { type FluxChartHandle } from "@/components/charts/flux/index";
+import FluxChart, {
+  type FluxChartHandle,
+} from "@/components/charts/flux/index";
 
 // ── IMPORT MODULAR HUD COMPONENTS (SRP COMPLIANT) ───────────────────────────
 import HeaderToken from "@/components/hud/HeaderToken";
 import TargetConsole from "@/components/hud/TargetConsole";
 import TelemetryPanel from "@/components/hud/TelemetryPanel";
 
-export default function EXOPLANETARY() {
-  const [targetName, setTargetName] = useState("Kepler-452");
+function telescopeToMission(telescope: string): string {
+  const map: Record<string, string> = {
+    JWST: "JWST",
+    TESS: "TESS",
+    KEPLER: "Kepler",
+    HUBBLE: "HST",
+  };
+  return map[telescope.toUpperCase()] ?? "Kepler";
+}
+
+function SimulatorInner() {
+  const searchParams = useSearchParams();
+  const initialSystem = searchParams.get("system") ?? "Kepler-452";
+  const initialTelescope = searchParams.get("telescope") ?? "Kepler";
+
+  const [targetName, setTargetName] = useState(initialSystem);
   const [loading, setLoading] = useState(false);
   const [systemData, setSystemData] = useState<any>(null);
   const [timeCounter, setTimeCounter] = useState(0.0);
@@ -23,8 +40,9 @@ export default function EXOPLANETARY() {
     const activeTarget = targetOverride || targetName;
     setLoading(true);
     try {
+      const mission = telescopeToMission(initialTelescope);
       const res = await fetch(
-        `/api/v1/flux/process?target=${encodeURIComponent(activeTarget)}`
+        `/api/v1/flux/process?target=${encodeURIComponent(activeTarget)}&mission=${encodeURIComponent(mission)}`,
       );
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -39,7 +57,7 @@ export default function EXOPLANETARY() {
 
   // Automatically fetch baseline dataset on load initialization
   useEffect(() => {
-    triggerSpacePipeline();
+    triggerSpacePipeline(initialSystem);
   }, []);
 
   // 2. TIMELINE COUNTER AUTOMATION ENGINE (Frame ticker integration)
@@ -80,7 +98,6 @@ export default function EXOPLANETARY() {
 
       {/* ── LAYER 1: HUD OVERLAY ROOT ──────────────────────────────────────── */}
       <div id="hud-root">
-
         {/* ── A. TOP-LEFT: BRANDING / WORDMARK (MODULARIZED) ───────────────── */}
         <HeaderToken isLive={isPlaying} version="v2.4" />
 
@@ -97,12 +114,12 @@ export default function EXOPLANETARY() {
         {systemData && (
           <TelemetryPanel
             data={{
-              targetName:      systemData.metadata.target_name,
-              mission:         systemData.metadata.mission,
-              starMassSolar:   systemData.metadata.star_mass_solar,
+              targetName: systemData.metadata.target_name,
+              mission: systemData.metadata.mission,
+              starMassSolar: systemData.metadata.star_mass_solar,
               starRadiusSolar: systemData.metadata.star_radius_solar,
               totalDataPoints: systemData.metadata.total_processed_points,
-              phaseAngleRad:   livePhaseAngle,
+              phaseAngleRad: livePhaseAngle,
             }}
             isPlaying={isPlaying}
             onPlayPause={() => setIsPlaying(!isPlaying)}
@@ -141,3 +158,18 @@ export default function EXOPLANETARY() {
   );
 }
 
+export default function EXOPLANETARY() {
+  return (
+    <Suspense
+      fallback={
+        <div className="loading-veil">
+          <div className="spinner" />
+        </div>
+      }
+    >
+      <SimulatorInner />
+    </Suspense>
+  );
+}
+
+import { Suspense } from "react";
