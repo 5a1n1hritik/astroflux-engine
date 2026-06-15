@@ -2828,3 +2828,5 @@ Scalability + Export Layer
 ```
 
 Aur honestly, us point par ye component "FluxChart" kam aur ek mini scientific visualization framework zyada lagega. Recharts sirf renderer rahega. Actual value viewport engine, analysis engine, decimation pipeline, annotation system aur export subsystem me hogi. Yehi woh boundary hai jahan hobby charts aur production scientific tooling alag dikhne lagte hain.
+
+---
