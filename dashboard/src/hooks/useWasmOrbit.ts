@@ -21,31 +21,35 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
+// ── Types Aligned with 20-Keys DB and Upgraded Rust Engine ───────────────────
 export interface OrbitalConfig {
-  star_mass_solar:     number;
-  star_radius_solar:   number;
-  orbital_period_days: number;
-  semi_major_axis_au:  number;
-  eccentricity:        number;
+  star_mass: number; // Aligned with st_mass (Solar Mass)
+  star_radius: number; // Aligned with st_rad (Solar Radii)
+  orbital_period_days: number; // pl_orbper (Days)
+  semi_major_axis_au: number; // pl_orbsmax (AU)
+  eccentricity: number; // pl_orbeccen
+  orbital_inclination_deg: number; // pl_orbincl (Tilt Degrees)
 }
 
 export interface OrbitalFrame {
-  position_x:          number;  // AU, ecliptic plane X
-  position_y:          number;  // AU, ecliptic plane Y (maps to Three.js Z)
-  current_phase_angle: number;  // radians, 0–2π
+  position_x: number; // 3D Matrix Vector X
+  position_y: number; // 3D Matrix Vector Y
+  position_z: number; // 3D Matrix Vector Z (Inclination Tilt axis)
+  current_phase_angle: number; // Radians, 0–2π
 }
 
 export interface WasmEngine {
-  computeFrame: (config: OrbitalConfig, timeDays: number) => OrbitalFrame | null;
+  computeFrame: (
+    config: OrbitalConfig,
+    timeDays: number,
+  ) => OrbitalFrame | null;
 }
 
-// ── Module-level singleton ────────────────────────────────────────────────────
+// ── Module-level singleton ───────────────────────────────────────────────────
 // Stored outside React's lifecycle so it survives re-renders and StrictMode
 // double-invocation. `initPromise` prevents concurrent init races.
 
-let _engine:      WasmEngine | null = null;
+let _engine: WasmEngine | null = null;
 let _initPromise: Promise<void> | null = null;
 
 async function initWasmSingleton(config: OrbitalConfig): Promise<void> {
@@ -60,21 +64,39 @@ async function initWasmSingleton(config: OrbitalConfig): Promise<void> {
     // Must be awaited before any exported functions are callable.
     await module.default();
 
-    // Handshake: validates that the WASM memory layout matches our config shape.
-    const handshakeResult = module.astroflux_handshake(config);
-    console.info("[AstroFlux WASM] Handshake confirmed:", handshakeResult);
+    // Mapping fields correctly for the raw Rust struct handshake
+    const rustHandshakeConfig = {
+      star_mass: config.star_mass,
+      star_radius: config.star_radius,
+      orbital_period_days: config.orbital_period_days,
+      semi_major_axis_au: config.semi_major_axis_au,
+      eccentricity: config.eccentricity,
+      orbital_inclination_deg: config.orbital_inclination_deg,
+    };
+
+    const handshakeResult = module.astroflux_handshake(rustHandshakeConfig);
+    console.info("[AstroFlux WASM] 3D Handshake confirmed:", handshakeResult);
 
     // Wrap the raw WASM export in a typed closure with null-safe error boundary.
     _engine = {
       computeFrame(cfg: OrbitalConfig, timeDays: number): OrbitalFrame | null {
         try {
-          // compute_orbital_frame returns a JS object from Rust via wasm-bindgen.
-          // Shape: { position_x, position_y, current_phase_angle }
-          const raw = module.compute_orbital_frame(cfg, timeDays);
+          const rawRustConfig = {
+            star_mass: cfg.star_mass,
+            star_radius: cfg.star_radius,
+            orbital_period_days: cfg.orbital_period_days,
+            semi_major_axis_au: cfg.semi_major_axis_au,
+            eccentricity: cfg.eccentricity,
+            orbital_inclination_deg: cfg.orbital_inclination_deg,
+          };
+
+          const raw = module.compute_orbital_frame(rawRustConfig, timeDays);
           if (!raw) return null;
+
           return {
-            position_x:          raw.position_x          ?? 0,
-            position_y:          raw.position_y          ?? 0,
+            position_x: raw.position_x ?? 0,
+            position_y: raw.position_y ?? 0,
+            position_z: raw.position_z ?? 0, // Catching the third spatial axis
             current_phase_angle: raw.current_phase_angle ?? 0,
           };
         } catch {
@@ -85,7 +107,7 @@ async function initWasmSingleton(config: OrbitalConfig): Promise<void> {
       },
     };
   } catch (err) {
-    console.error("[AstroFlux WASM] Initialization failed:", err);
+    console.error("[AstroFlux WASM] 3D Initialization failed:", err);
     throw err;
   }
 }
@@ -93,7 +115,7 @@ async function initWasmSingleton(config: OrbitalConfig): Promise<void> {
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useWasmOrbit(config: OrbitalConfig): {
-  engine:  WasmEngine | null;
+  engine: WasmEngine | null;
   isReady: boolean;
 } {
   const [isReady, setIsReady] = useState<boolean>(!!_engine);

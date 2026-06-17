@@ -2,15 +2,21 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
-import OrbitSimulator from "@/components/OrbitSimulator";
+import OrbitSimulator from "@/components/universe/OrbitSimulator";
 import FluxChart, {
   type FluxChartHandle,
 } from "@/components/charts/flux/index";
 
+// ── CRITICAL: RUST WASM INGESTION INITIALIZATION ───────────────────────────
+import initWasm, {
+  astroflux_handshake,
+  compute_orbital_frame,
+} from "@/core-simulator-wasm/core_simulator";
+
 // ── IMPORT MODULAR HUD COMPONENTS (SRP COMPLIANT) ───────────────────────────
-import HeaderToken from "@/components/hud/HeaderToken";
-import TargetConsole from "@/components/hud/TargetConsole";
-import TelemetryPanel from "@/components/hud/TelemetryPanel";
+import HeaderToken from "@/components/universe/hud/HeaderToken";
+import TargetConsole from "@/components/universe/hud/TargetConsole";
+import TelemetryPanel from "@/components/universe/hud/TelemetryPanel";
 
 function telescopeToMission(telescope: string): string {
   const map: Record<string, string> = {
@@ -24,16 +30,29 @@ function telescopeToMission(telescope: string): string {
 
 function SimulatorInner() {
   const searchParams = useSearchParams();
-  const initialSystem = searchParams.get("system") ?? "Kepler-452";
+  const initialSystem = searchParams.get("system") ?? "Kepler-452 b";
   const initialTelescope = searchParams.get("telescope") ?? "Kepler";
 
   const [targetName, setTargetName] = useState(initialSystem);
   const [loading, setLoading] = useState(false);
   const [systemData, setSystemData] = useState<any>(null);
+
+  // High-performance state hooks driven by Rust bindings
   const [timeCounter, setTimeCounter] = useState(0.0);
   const [livePhaseAngle, setLivePhaseAngle] = useState(0.0);
   const [isPlaying, setIsPlaying] = useState(true);
+
+  // New State for 3D Positions Vectors returned by WASM Core Engine
+  const [spatialPositions, setSpatialPositions] = useState({
+    x: 0,
+    y: 0,
+    z: 0,
+  });
+  const [wasmReady, setWasmReady] = useState(false);
+
   const fluxChartRef = useRef<FluxChartHandle>(null);
+  const animationFrameId = useRef<number>(0);
+  const timerRef = useRef<number>(0); // Mutable ticker for stable physics frame updates
 
   // 1. DATA ACQUISITION FROM NEXT GATEWAY ROUTE
   const triggerSpacePipeline = async (targetOverride?: string) => {
@@ -42,7 +61,7 @@ function SimulatorInner() {
     try {
       const mission = telescopeToMission(initialTelescope);
       const res = await fetch(
-        `/api/v1/flux/process?target=${encodeURIComponent(activeTarget)}&mission=${encodeURIComponent(mission)}`,
+        `/api/v1/flux/process?target=${encodeURIComponent(activeTarget)}`,
       );
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -60,65 +79,105 @@ function SimulatorInner() {
     triggerSpacePipeline(initialSystem);
   }, []);
 
-  // 2. TIMELINE COUNTER AUTOMATION ENGINE (Frame ticker integration)
+  // PHASE 1: Asynchronously mount Rust WebAssembly Module into Browser Context
   useEffect(() => {
-    if (!isPlaying || !systemData) return;
+    async function bootWasmBinary() {
+      try {
+        console.log(
+          "[WASM BOOT] Mounting compiled core-simulator binary space...",
+        );
+        await initWasm();
+        setWasmReady(true);
+        console.log("[WASM BOOT] Core Space Solver: ONLINE");
+      } catch (err) {
+        console.error("[WASM BOOT CRASH] WebAssembly allocation error:", err);
+      }
+    }
+    bootWasmBinary();
 
-    let frameId: number;
-    const tick = () => {
-      setTimeCounter((prev) => prev + 0.05); // Standardized step value delta
-      frameId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animationFrameId.current);
+  }, []);
+
+  // PHASE 3: High-Speed 60fps Physics Solver Frame Loop
+  useEffect(() => {
+    if (!wasmReady || !systemData || !isPlaying) return;
+
+    // Standard Configuration Matrix derived from our upgraded 20-keys database fields
+    const rustConfig = {
+      star_mass: systemData.metadata.star_mass ?? 1.0,
+      star_radius: systemData.metadata.star_radius ?? 1.0,
+      orbital_period_days: systemData.metadata.orbital_period ?? 365.25,
+      semi_major_axis_au: systemData.metadata.semi_major_axis ?? 1.0,
+      eccentricity: systemData.metadata.eccentricity ?? 0.0,
+      orbital_inclination_deg: systemData.metadata.orbital_inclination ?? 0.0,
     };
 
-    frameId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frameId);
-  }, [isPlaying, systemData]);
+    const renderLoopTicker = () => {
+      // Step A: Stable progressive timestamp ticking increments
+      timerRef.current += 0.1;
+      setTimeCounter(timerRef.current);
+
+      try {
+        // Step B: Quantum compute exact coordinates inside compiled Rust thread
+        const frameState = compute_orbital_frame(rustConfig, timerRef.current);
+
+        // Step C: Update localized state vectors for Three.js engine and Chart HUD elements
+        setLivePhaseAngle(frameState.current_phase_angle);
+        setSpatialPositions({
+          x: frameState.position_x,
+          y: frameState.position_y,
+          z: frameState.position_z,
+        });
+      } catch (err) {
+        console.error("[RENDER LOOP CRASH] Solver iteration failure:", err);
+      }
+
+      animationFrameId.current = requestAnimationFrame(renderLoopTicker);
+    };
+
+    animationFrameId.current = requestAnimationFrame(renderLoopTicker);
+    return () => cancelAnimationFrame(animationFrameId.current);
+  }, [wasmReady, systemData, isPlaying]);
 
   return (
     <>
-      {/* ── LAYER 0: THREE.JS WEBGL CANVAS ROOT ───────────────────────────── */}
-      <div id="canvas-root">
-        {systemData && (
-          <OrbitSimulator
-            targetMetadata={{
-              star_mass_solar: systemData.metadata.star_mass_solar,
-              star_radius_solar: systemData.metadata.star_radius_solar,
-              orbital_period_days: systemData.metadata.star_mass_solar * 365,
-              semi_major_axis_au: 1.0,
-              eccentricity: 0.15,
-            }}
-            currentFrameTime={timeCounter}
-            onFrameUpdate={(phase) => {
-              fluxChartRef.current?.setPhase(phase);
-              setLivePhaseAngle(phase);
+      <div className="hud-viewport bg-black text-white min-h-screen relative font-mono overflow-hidden select-none">
+        {/* ── A. BACKGROUND 3D CANVAS LAYER ───────────────────────────────── */}
+        <div className="absolute inset-0 z-0 pointer-events-auto">
+          {systemData && (
+            <OrbitSimulator
+              systemData={systemData}
+              currentFrameTime={timeCounter}
+              onFrameUpdate={(phase) => {
+                fluxChartRef.current?.setPhase(phase);
+                setLivePhaseAngle(phase);
+              }}
+            />
+          )}
+        </div>
+
+        {/* ── B. TOP LAYER: SYSTEM TOKENS & ACTION CONSOLES ────────────────── */}
+        <div className="absolute top-[var(--hud-margin)] left-[var(--hud-margin)] z-10 pointer-events-none flex flex-col gap-4">
+          <HeaderToken isLive={isPlaying} version="v2.4" />
+
+          <TargetConsole
+            defaultTarget={targetName}
+            onLoad={async (name) => {
+              setTargetName(name);
+              await triggerSpacePipeline(name);
             }}
           />
-        )}
-      </div>
+        </div>
 
-      {/* ── LAYER 1: HUD OVERLAY ROOT ──────────────────────────────────────── */}
-      <div id="hud-root">
-        {/* ── A. TOP-LEFT: BRANDING / WORDMARK (MODULARIZED) ───────────────── */}
-        <HeaderToken isLive={isPlaying} version="v2.4" />
-
-        {/* ── B. TOP-RIGHT: SYSTEM LOAD CONTROLS (MODULARIZED) ─────────────── */}
-        <TargetConsole
-          defaultTarget={targetName}
-          onLoad={async (name) => {
-            setTargetName(name);
-            await triggerSpacePipeline(name);
-          }}
-        />
-
-        {/* ── C. LEFT-CENTER: TELEMETRY PANEL (MODULARIZED & ANIMATED) ─────── */}
+        {/* ── C. RIGHT LAYER: QUANTUM SPECTRAL TELEMETRY ───────────────────── */}
         {systemData && (
           <TelemetryPanel
             data={{
               targetName: systemData.metadata.target_name,
-              mission: systemData.metadata.mission,
-              starMassSolar: systemData.metadata.star_mass_solar,
-              starRadiusSolar: systemData.metadata.star_radius_solar,
-              totalDataPoints: systemData.metadata.total_processed_points,
+              mission: systemData.metadata.host_name ?? "TAP",
+              starMassSolar: systemData.metadata.star_mass ?? 1.0,
+              starRadiusSolar: systemData.metadata.star_radius ?? 1.0,
+              totalDataPoints: systemData.scientific_arrays.time.length,
               phaseAngleRad: livePhaseAngle,
             }}
             isPlaying={isPlaying}
@@ -142,13 +201,15 @@ function SimulatorInner() {
         )}
 
         {/* ── E. LOADING VEIL ─────────────────────────────────────────────── */}
-        {!systemData && (
+        {(!systemData || !wasmReady) && (
           <div className="loading-veil">
             <div className="spinner" />
             <div className="flex flex-col items-center gap-1.5">
               <span className="wordmark">AstroFlux // Engine</span>
               <span className="wordmark-sub">
-                Connecting to underground pipeline interfaces...
+                {!wasmReady
+                  ? "Booting WebAssembly Physics Layers..."
+                  : "Connecting to pipeline..."}
               </span>
             </div>
           </div>

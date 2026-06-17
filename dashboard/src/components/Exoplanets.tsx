@@ -1,13 +1,13 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import OrbitSimulator from "@/components/OrbitSimulator";
+import OrbitSimulator from "@/components/universe/OrbitSimulator";
 import FluxChart, { type FluxChartHandle } from "@/components/charts/flux/index";
 
 // ── IMPORT MODULAR HUD COMPONENTS (SRP COMPLIANT) ───────────────────────────
-import HeaderToken from "@/components/hud/HeaderToken";
-import TargetConsole from "@/components/hud/TargetConsole";
-import TelemetryPanel from "@/components/hud/TelemetryPanel";
+import HeaderToken from "@/components/universe/hud/HeaderToken";
+import TargetConsole from "@/components/universe/hud/TargetConsole";
+import TelemetryPanel from "@/components/universe/hud/TelemetryPanel";
 
 export default function EXOPLANETARY() {
   const [targetName, setTargetName] = useState("Kepler-452");
