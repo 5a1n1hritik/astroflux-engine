@@ -4,11 +4,12 @@ use serde::{Serialize, Deserialize};
 // 1. Static Configuration Inputs Map
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct OrbitConstants {
-    pub star_mass_solar: f64,
-    pub star_radius_solar: f64,
+    pub star_mass: f64,
+    pub star_radius: f64,
     pub orbital_period_days: f64,
     pub semi_major_axis_au: f64,
     pub eccentricity: f64,
+    pub orbital_inclination_deg: f64,  // pl_orbincl (Tilt Degrees)
 }
 
 // 2. Dynamic Frame Output Vectors Package
@@ -16,8 +17,10 @@ pub struct OrbitConstants {
 pub struct SimulationState {
     pub position_x: f64,
     pub position_y: f64,
+    pub position_z: f64,
     pub current_velocity_x: f64,
     pub current_velocity_y: f64,
+    pub current_velocity_z: f64,
     pub current_phase_angle: f64,
 }
 
@@ -28,8 +31,8 @@ pub fn astroflux_handshake(js_config: JsValue) -> Result<JsValue, JsValue> {
         .map_err(|e| JsValue::from_str(&format!("WASM Deserialization Error: {}", e)))?;
         
     let confirmation_msg = format!(
-        "Rust WASM Engine Connected. Target System Parameters Locked -> Mass: {} Solar, Period: {} Days",
-        constants.star_mass_solar, constants.orbital_period_days
+        "ASTROFLUX Core Engine Verified. Orbit plane orientation locked -> Mass: {} M_sun, Period: {} Days, Tilt: {} deg",
+        constants.star_mass, constants.orbital_period_days, constants.orbital_inclination_deg
     );
     
     Ok(JsValue::from_str(&confirmation_msg))
@@ -45,6 +48,9 @@ pub fn compute_orbital_frame(js_config: JsValue, current_time_days: f64) -> Resu
     let pi = std::f64::consts::PI;
     let e = constants.eccentricity;
     let a = constants.semi_major_axis_au;
+
+    // Convert Inclination Angle from Degrees to Radians for Trigonometric Rotation Matrices
+    let inclination_rad = constants.orbital_inclination_deg.to_radians();
 
     // Step A: Calculate Mean Anomaly (M) -> Time-dependent angular stepping
     // M = 2π * (t / T) mod 2π
@@ -71,27 +77,40 @@ pub fn compute_orbital_frame(js_config: JsValue, current_time_days: f64) -> Resu
     let true_anomaly = 2.0 * ((1.0 + e).sqrt() * (eccentric_anomaly / 2.0).sin())
         .atan2((1.0 - e).sqrt() * (eccentric_anomaly / 2.0).cos());
 
-    // Step D: Calculate Cartesian Coordinates (Orbit positions mapping)
+    // Step D: Calculate Cartesian Coordinates (2D Orbit positions mapping)
     // Elliptical geometry: X = a*(cos E - e), Y = a * sqrt(1 - e^2) * sin E
-    let x_pos = a * (eccentric_anomaly.cos() - e);
-    let y_pos = a * (1.0 - e * e).sqrt() * eccentric_anomaly.sin();
+    let x_orbital = a * (eccentric_anomaly.cos() - e);
+    let y_orbital = a * (1.0 - e * e).sqrt() * eccentric_anomaly.sin();
 
-    // Step E: Vis-Viva Equation ke zariye Orbit Velocities Vectors compute karna
+    // Step E: Apply Three-Dimensional Inclination Rotation (Y-Z Plane Matrix Rotation)
+    // Rotating along the line of nodes to preserve SpaceX telemetry hud standards
+    let x_pos = x_orbital; 
+    let y_pos = y_orbital * inclination_rad.cos();
+    let z_pos = y_orbital * inclination_rad.sin(); // Vector projection into the 3rd space plane
+
+    // Step F: Compute Orbit Velocity Scalars using Vis-Viva physical parameters
     // Multipliers for canvas rendering or dynamic scaling values
     let mu = 4.0 * pi * pi * (a * a * a) / (constants.orbital_period_days * constants.orbital_period_days);
-    let r = (x_pos * x_pos + y_pos * y_pos).sqrt();
+    let r = (x_orbital * x_orbital + y_orbital * y_orbital).sqrt();
     let v_mag = (mu * (2.0 / r - 1.0 / a)).sqrt();
 
+    // Calculate dynamic 3D directional flow velocities maps
     // Flight path calculation vectors
-    let v_x = -v_mag * eccentric_anomaly.sin() / (1.0 - e * eccentric_anomaly.cos());
-    let v_y = v_mag * (1.0 - e * e).sqrt() * eccentric_anomaly.cos() / (1.0 - e * eccentric_anomaly.cos());
+    let v_x_orbital = -v_mag * eccentric_anomaly.sin() / (1.0 - e * eccentric_anomaly.cos());
+    let v_y_orbital = v_mag * (1.0 - e * e).sqrt() * eccentric_anomaly.cos() / (1.0 - e * eccentric_anomaly.cos());
+    
+    let v_x = v_x_orbital;
+    let v_y = v_y_orbital * inclination_rad.cos();
+    let v_z = v_y_orbital * inclination_rad.sin();
 
     // Packaging results into the High-Performance structural object
     let frame_state = SimulationState {
         position_x: x_pos,
         position_y: y_pos,
+        position_z: z_pos,
         current_velocity_x: v_x,
         current_velocity_y: v_y,
+        current_velocity_z: v_z,
         current_phase_angle: true_anomaly,
     };
 
