@@ -1,44 +1,103 @@
-/**
- * StarMaterial.ts
- * ─────────────────────────────────────────────────────────────────────────────
- * Factory for a custom Three.js ShaderMaterial that renders a physically-
- * motivated stellar corona.
- *
- * Shader model (simplified stellar atmosphere):
- *
- *   1. CORE  — Solid bright disc via smoothstep on UV distance from center.
- *              Color ramps from stellar-white at center to amber-yellow at limb
- *              (limb darkening — the real optical physics: we see deeper, hotter
- *              gas at disk center, cooler surface at limb).
- *
- *   2. CORONA — Two exponential falloff halos layered over each other:
- *               - Inner corona: tight, bright, warm chromatic halo
- *               - Outer corona: wide, dim, cold-blue scattered light
- *               These are additive-blended to the core.
- *
- *   3. FLICKER — A time-driven sin/cos noise modulates the outer corona
- *                amplitude by ±6%, simulating solar wind density fluctuations.
- *                Frequency is intentionally low (0.4 Hz equivalent) so it reads
- *                as atmospheric shimmer, not strobing.
- *
- *   4. CHROMATIC ABERRATION FRINGE — A thin ring at the core/corona boundary
- *                gets a slight cyan tint (reminiscent of real refraction arcs
- *                visible in coronagraph imagery).
- *
- * The mesh must be a PlaneGeometry (a flat billboard quad facing the camera).
- * Use Three.js AdditiveBlending so the halo adds light to the scene rather
- * than occluding stars behind it.
- * ─────────────────────────────────────────────────────────────────────────────
- */
-
 import * as THREE from "three";
 
+// ── Temperature → Stellar Profile Mapping ────────────────────────────────────
+export interface StellarProfile {
+  coreColor:    string;
+  limbColor:    string;
+  coronaInner:  string;
+  coronaOuter:  string;
+  intensity:    number;
+  corona1Falloff: number;
+  corona2Falloff: number;
+  pointLightColor: string;
+  pointLightIntensity: number;
+}
+
+export function getStellarProfile(teff: number): StellarProfile {
+  if (teff < 3500) {
+    // M-Dwarf — Red/Crimson
+    return {
+      coreColor:    "#ff4400",
+      limbColor:    "#cc2200",
+      coronaInner:  "#ff3300",
+      coronaOuter:  "#661100",
+      intensity:    0.9,
+      corona1Falloff: 22,
+      corona2Falloff: 4,
+      pointLightColor: "#ff4400",
+      pointLightIntensity: 1.5,
+    };
+  } else if (teff < 5000) {
+    // K-Type — Orange
+    return {
+      coreColor:    "#ffaa44",
+      limbColor:    "#ff7700",
+      coronaInner:  "#ff8800",
+      coronaOuter:  "#ff4400",
+      intensity:    1.0,
+      corona1Falloff: 20,
+      corona2Falloff: 4.5,
+      pointLightColor: "#ffaa44",
+      pointLightIntensity: 2.5,
+    };
+  } else if (teff < 6000) {
+    // G-Type (Sun-like) — Yellow-White
+    return {
+      coreColor:    "#fffef0",
+      limbColor:    "#ffd060",
+      coronaInner:  "#ffb830",
+      coronaOuter:  "#e8f4ff",
+      intensity:    1.2,
+      corona1Falloff: 18,
+      corona2Falloff: 5,
+      pointLightColor: "#ffdf90",
+      pointLightIntensity: 4.0,
+    };
+  } else if (teff < 7500) {
+    // F-Type — Yellow-White bright
+    return {
+      coreColor:    "#ffffff",
+      limbColor:    "#ffe8aa",
+      coronaInner:  "#fff0cc",
+      coronaOuter:  "#e8f0ff",
+      intensity:    1.5,
+      corona1Falloff: 16,
+      corona2Falloff: 5.5,
+      pointLightColor: "#fff5cc",
+      pointLightIntensity: 5.5,
+    };
+  } else if (teff < 10000) {
+    // A-Type — White-Blue
+    return {
+      coreColor:    "#ffffff",
+      limbColor:    "#cce0ff",
+      coronaInner:  "#aad4ff",
+      coronaOuter:  "#88aaff",
+      intensity:    1.8,
+      corona1Falloff: 14,
+      corona2Falloff: 6,
+      pointLightColor: "#aaccff",
+      pointLightIntensity: 6.5,
+    };
+  } else {
+    // O/B-Type — Electric Blue Giant
+    return {
+      coreColor:    "#eeeeff",
+      limbColor:    "#8899ff",
+      coronaInner:  "#6688ff",
+      coronaOuter:  "#2244cc",
+      intensity:    2.2,
+      corona1Falloff: 12,
+      corona2Falloff: 7,
+      pointLightColor: "#6688ff",
+      pointLightIntensity: 8.0,
+    };
+  }
+}
+
 // ── Vertex Shader ─────────────────────────────────────────────────────────────
-// Minimal pass-through. We only need UV coordinates in the fragment shader.
-// modelViewMatrix and projectionMatrix are Three.js built-ins.
 const vertexShader = /* glsl */ `
   varying vec2 vUv;
-
   void main() {
     vUv = uv;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
@@ -47,124 +106,106 @@ const vertexShader = /* glsl */ `
 
 // ── Fragment Shader ───────────────────────────────────────────────────────────
 const fragmentShader = /* glsl */ `
-  // ── Uniforms (set from JS, updated per-frame for time) ────────────────────
-  uniform float uTime;          // Elapsed seconds — drives flicker animation
-  uniform vec3  uCoreColor;     // RGB: stellar photosphere center color
-  uniform vec3  uLimbColor;     // RGB: stellar limb color (darker, redder)
-  uniform vec3  uCoronaInner;   // RGB: inner corona warm halo
-  uniform vec3  uCoronaOuter;   // RGB: outer corona cool scatter
-  uniform float uCoreRadius;    // [0–1] fraction of UV space the solid disc occupies
-  uniform float uCorona1Falloff;// Controls how tight the inner corona halo is
-  uniform float uCorona2Falloff;// Controls how wide the outer corona halo is
-  uniform float uIntensity;     // Global brightness multiplier
+  uniform float uTime;
+  uniform vec3  uCoreColor;
+  uniform vec3  uLimbColor;
+  uniform vec3  uCoronaInner;
+  uniform vec3  uCoronaOuter;
+  uniform float uCoreRadius;
+  uniform float uCorona1Falloff;
+  uniform float uCorona2Falloff;
+  uniform float uIntensity;
 
   varying vec2 vUv;
 
-  // ── Utility: smooth noise approximation (no texture lookup needed) ─────────
-  // Two sin/cos waves at incommensurate frequencies → aperiodic "flicker"
   float flicker(float t) {
     return 0.94
       + 0.03 * sin(t * 2.71828 + 1.4142)
       + 0.03 * cos(t * 1.61803 + 0.5772);
   }
 
+  // Perlin-style plasma noise
+  float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+  }
+  float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(
+      mix(hash(i), hash(i + vec2(1,0)), u.x),
+      mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), u.x),
+      u.y
+    );
+  }
+
   void main() {
-    // ── 1. Distance from center of the quad (UV center = 0.5, 0.5) ──────────
     vec2  centered = vUv - vec2(0.5);
-    float dist     = length(centered);           // 0 at center, ~0.707 at corner
+    float dist     = length(centered);
 
-    // ── 2. STELLAR CORE ──────────────────────────────────────────────────────
-    // smoothstep edge: disc is fully opaque inside uCoreRadius,
-    // smoothly fades to transparent over a 0.01 penumbra.
-    float coreMask    = 1.0 - smoothstep(uCoreRadius - 0.01, uCoreRadius + 0.005, dist);
+    // ── Core ──────────────────────────────────────────────────────────────────
+    float coreMask  = 1.0 - smoothstep(uCoreRadius - 0.01, uCoreRadius + 0.005, dist);
+    float limbFactor = pow(1.0 - clamp(dist / uCoreRadius, 0.0, 1.0), 0.4);
 
-    // Limb darkening: interpolate from center (white-hot) to limb (amber)
-    // The exponent 0.4 gives a physically reasonable darkening curve.
-    float limbFactor  = pow(1.0 - clamp(dist / uCoreRadius, 0.0, 1.0), 0.4);
-    vec3  coreColor   = mix(uLimbColor, uCoreColor, limbFactor);
+    // Plasma noise on surface
+    vec2 noiseUv = centered * 8.0 + vec2(uTime * 0.08, uTime * 0.05);
+    float plasma  = noise(noiseUv) * 0.5 + noise(noiseUv * 2.1 + 1.7) * 0.3;
+    float plasmaStrength = coreMask * plasma * 0.18;
 
-    // ── 3. INNER CORONA ──────────────────────────────────────────────────────
-    // Exponential falloff starting from the core edge
+    vec3 coreColor = mix(uLimbColor, uCoreColor, limbFactor + plasmaStrength);
+
+    // ── Coronas ───────────────────────────────────────────────────────────────
+    float flk        = flicker(uTime);
     float innerCorona = exp(-uCorona1Falloff * max(dist - uCoreRadius, 0.0));
-    innerCorona      *= (1.0 - coreMask); // don't double-add to the disc interior
+    innerCorona      *= (1.0 - coreMask);
 
-    // ── 4. OUTER CORONA with flicker ────────────────────────────────────────
-    float flk         = flicker(uTime);
     float outerCorona = exp(-uCorona2Falloff * max(dist - uCoreRadius * 0.5, 0.0));
     outerCorona      *= flk * (1.0 - coreMask * 0.8);
 
-    // ── 5. CHROMATIC ABERRATION FRINGE ──────────────────────────────────────
-    // A thin ring right at the core/corona boundary gets a cyan tint.
-    float ringMask    = smoothstep(uCoreRadius - 0.015, uCoreRadius, dist)
-                      * smoothstep(uCoreRadius + 0.02,  uCoreRadius, dist);
-    vec3  ringColor   = vec3(0.4, 0.85, 1.0) * ringMask * 0.35;
+    // ── Chromatic fringe ──────────────────────────────────────────────────────
+    float ringMask = smoothstep(uCoreRadius - 0.015, uCoreRadius, dist)
+                   * smoothstep(uCoreRadius + 0.02,  uCoreRadius, dist);
+    vec3 ringColor = vec3(0.4, 0.85, 1.0) * ringMask * 0.35;
 
-    // ── 6. COMPOSITE ─────────────────────────────────────────────────────────
+    // ── Composite ─────────────────────────────────────────────────────────────
     vec3 color = vec3(0.0);
-    color     += coreColor   * coreMask;
-    color     += uCoronaInner * innerCorona * 0.7;
-    color     += uCoronaOuter * outerCorona * 0.25;
-    color     += ringColor;
+    color += coreColor    * coreMask;
+    color += uCoronaInner * innerCorona * 0.7;
+    color += uCoronaOuter * outerCorona * 0.25;
+    color += ringColor;
 
-    // Alpha: solid at core, exponential falloff in corona
     float alpha = coreMask + innerCorona * 0.6 + outerCorona * 0.18;
-    alpha       = clamp(alpha, 0.0, 1.0);
+    alpha = clamp(alpha, 0.0, 1.0);
 
     gl_FragColor = vec4(color * uIntensity, alpha);
   }
 `;
 
-// ── Factory function ──────────────────────────────────────────────────────────
-
-export interface StarMaterialOptions {
-  /** Radius of the photosphere disc in UV space. Default: 0.08 */
-  coreRadius?: number;
-  /** Inner corona exponential falloff tightness. Higher = tighter. Default: 18 */
-  corona1Falloff?: number;
-  /** Outer corona exponential falloff. Lower = wider halo. Default: 5 */
-  corona2Falloff?: number;
-  /** Overall brightness multiplier. Default: 1.2 */
-  intensity?: number;
-}
-
-export function createStarMaterial(opts: StarMaterialOptions = {}): THREE.ShaderMaterial {
-  const {
-    coreRadius    = 0.08,
-    corona1Falloff = 18,
-    corona2Falloff = 5,
-    intensity     = 1.2,
-  } = opts;
+// ── Factory ───────────────────────────────────────────────────────────────────
+export function createStarMaterial(teff: number = 5778): THREE.ShaderMaterial {
+  const p = getStellarProfile(teff);
 
   return new THREE.ShaderMaterial({
     vertexShader,
     fragmentShader,
-
     uniforms: {
-      uTime:          { value: 0 },
-      // Core: blue-white at center (T ~ 6000K analog)
-      uCoreColor:     { value: new THREE.Color("#fffef0") },
-      // Limb: amber-yellow (cooler outer photosphere)
-      uLimbColor:     { value: new THREE.Color("#ffd060") },
-      // Inner corona: warm orange-white
-      uCoronaInner:   { value: new THREE.Color("#ffb830") },
-      // Outer corona: dim blue-white scatter
-      uCoronaOuter:   { value: new THREE.Color("#e8f4ff") },
-      uCoreRadius:    { value: coreRadius },
-      uCorona1Falloff:{ value: corona1Falloff },
-      uCorona2Falloff:{ value: corona2Falloff },
-      uIntensity:     { value: intensity },
+      uTime:           { value: 0 },
+      uCoreColor:      { value: new THREE.Color(p.coreColor) },
+      uLimbColor:      { value: new THREE.Color(p.limbColor) },
+      uCoronaInner:    { value: new THREE.Color(p.coronaInner) },
+      uCoronaOuter:    { value: new THREE.Color(p.coronaOuter) },
+      uCoreRadius:     { value: 0.08 },
+      uCorona1Falloff: { value: p.corona1Falloff },
+      uCorona2Falloff: { value: p.corona2Falloff },
+      uIntensity:      { value: p.intensity },
     },
-
-    // Additive blending: the glow ADDS light to whatever is behind it.
-    // This is physically correct — a star's corona doesn't occlude distant stars.
-    blending:     THREE.AdditiveBlending,
-    transparent:  true,
-    depthWrite:   false, // Corona pixels must not occlude other geometry in the depth buffer
-    side:         THREE.FrontSide,
+    blending:    THREE.AdditiveBlending,
+    transparent: true,
+    depthWrite:  false,
+    side:        THREE.FrontSide,
   });
 }
 
-// ── Uniform update helper (call inside rAF loop) ──────────────────────────────
-export function updateStarTime(material: THREE.ShaderMaterial, elapsedSeconds: number): void {
-  material.uniforms.uTime.value = elapsedSeconds;
+export function updateStarTime(mat: THREE.ShaderMaterial, t: number): void {
+  mat.uniforms.uTime.value = t;
 }

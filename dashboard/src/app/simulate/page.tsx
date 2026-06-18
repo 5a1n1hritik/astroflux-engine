@@ -186,7 +186,7 @@ function SimulatorInner() {
         )}
 
         {/* ── D. BOTTOM-CENTER: FLUX LIGHT CURVE CHART ───────────────────── */}
-        {systemData && (
+        {/* {systemData && (
           <div
             className="absolute left-1/2 -translate-x-1/2 w-[calc(100%-56px)] max-w-[860px] pointer-events-auto"
             style={{ bottom: "var(--hud-margin)" }}
@@ -198,7 +198,7 @@ function SimulatorInner() {
               currentPhaseAngle={livePhaseAngle}
             />
           </div>
-        )}
+        )} */}
 
         {/* ── E. LOADING VEIL ─────────────────────────────────────────────── */}
         {(!systemData || !wasmReady) && (
