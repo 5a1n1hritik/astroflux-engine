@@ -13,10 +13,9 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { useWasmOrbit, type OrbitalConfig } from "@/hooks/useWasmOrbit";
 import {
-  createStarMaterial,
-  updateStarTime,
-  getStellarProfile,
-} from "./StarMaterial";
+  createStarCoreMaterial,
+  createStarCoronaMaterial,
+} from "./graphics/star/StarShaderMaterial";
 
 // ── 1. EMBEDDED HIGH-PRECISION ASTRO TIMER ────────────────────────────────────
 class CoreAstroTimer {
@@ -87,6 +86,7 @@ export default function OrbitSimulator({
 
   const planetRef = useRef<THREE.Mesh | null>(null);
   const starMatRef = useRef<THREE.ShaderMaterial | null>(null);
+  const coronaMatRef = useRef<THREE.ShaderMaterial | null>(null);
   const pointLightRef = useRef<THREE.PointLight | null>(null);
 
   const wasmRef = useRef(wasmEngine);
@@ -138,36 +138,65 @@ export default function OrbitSimulator({
     const ambient = new THREE.AmbientLight("#0d1a2e", 0.35);
     scene.add(ambient);
 
-    // const pointLight = new THREE.PointLight("#ffdf90", 4.0, 30);
-    // pointLight.position.set(0, 0, 0);
-    // scene.add(pointLight);
-    // pointLightRef.current = pointLight;
-
     // 3. Environment Particle Starfields
     buildStarfield(scene, 2200, 0.022, 80, 0.55);
     buildStarfield(scene, 600, 0.042, 40, 0.8);
 
-    // 4. Dynamic Spectral Star Generation Loop
-    const starTemperature = systemData.metadata.star_temperature || 5778;
-    const starProfile = getStellarProfile(starTemperature);
-    const pointLight = new THREE.PointLight(
-      starProfile.pointLightColor,
-      starProfile.pointLightIntensity,
-      30,
-    );
+    // =========================================================
+    // new code
+    // =========================================================
+    const starTemperature = systemData.metadata.star_temperature ?? 5778;
+    const starRadius = systemData.metadata.star_radius ?? 1.0;
+
+    const starPreset = {
+      core:
+        starTemperature < 3700
+          ? "#ff5522"
+          : starTemperature > 8000
+            ? "#e8f4ff"
+            : "#fffef0",
+
+      limb:
+        starTemperature < 3700
+          ? "#cc1100"
+          : starTemperature > 8000
+            ? "#80c0ff"
+            : "#ffd060",
+
+      corona:
+        starTemperature < 3700
+          ? "#ff3333"
+          : starTemperature > 8000
+            ? "#0066ff"
+            : "#ffb830",
+
+      temperature: starTemperature,
+    };
+
+    const pointLight = new THREE.PointLight("#ffdf90", 4.0, 30);
     pointLight.position.set(0, 0, 0);
     scene.add(pointLight);
     pointLightRef.current = pointLight;
-    const starRadiusSolar = systemData.metadata.star_radius || 1.0;
-    const starQuadSize = Math.max(2.0, starRadiusSolar * 1.4);
-    const starGeo = new THREE.PlaneGeometry(starQuadSize, starQuadSize);
 
-    // Custom shader material driven cleanly by core st_teff metric classifications
-    const starMat = createStarMaterial(starTemperature);
-    const starMesh = new THREE.Mesh(starGeo, starMat);
-    starMesh.name = "starBillboard";
-    scene.add(starMesh);
-    starMatRef.current = starMat;
+    // Core sphere
+    const sphereR = Math.max(0.8, starRadius * 0.85);
+    const coreGeo = new THREE.SphereGeometry(sphereR, 64, 64);
+    const coreMat = createStarCoreMaterial(starPreset);
+    const coreMesh = new THREE.Mesh(coreGeo, coreMat);
+
+    coreMesh.name = "starCore";
+    scene.add(coreMesh);
+    starMatRef.current = coreMat; // reuse existing ref
+
+    // Corona billboard
+    const coronaSize = sphereR * 6.5;
+    const coronaGeo = new THREE.PlaneGeometry(coronaSize, coronaSize);
+    const coronaMat = createStarCoronaMaterial(starPreset);
+    const coronaMesh = new THREE.Mesh(coronaGeo, coronaMat);
+
+    coronaMesh.name = "starCorona";
+    scene.add(coronaMesh);
+    coronaMatRef.current = coronaMat;
 
     // 5. 3D Oriented Analytical Orbit Path Wireframe Guide
     buildOrbitPath(
@@ -194,9 +223,9 @@ export default function OrbitSimulator({
     //   emissiveIntensity: 0.25,
     // });
     const planetMat = buildPlanetMaterial(
-  systemData.metadata.planet_mass    ?? 1.0,
-  systemData.metadata.equilibrium_temperature ?? 250.0
-);
+      systemData.metadata.planet_mass ?? 1.0,
+      systemData.metadata.equilibrium_temperature ?? 250.0,
+    );
     const planet = new THREE.Mesh(planetGeo, planetMat);
     scene.add(planet);
     planetRef.current = planet;
@@ -245,17 +274,27 @@ export default function OrbitSimulator({
       const camera = cameraRef.current;
       const controls = controlsRef.current;
       const planet = planetRef.current;
-      const starMat = starMatRef.current;
+      // const starMat = starMatRef.current;
 
       if (!scene || !renderer || !camera || !planet) return;
 
       controls?.update();
-      if (starMat) updateStarTime(starMat, elapsed);
+      if (starMatRef.current) starMatRef.current.uniforms.uTime.value = elapsed;
 
-      const starMesh = scene.getObjectByName("starBillboard") as
+      if (coronaMatRef.current)
+        coronaMatRef.current.uniforms.uTime.value = elapsed;
+
+      const coronaMeshObj = scene.getObjectByName("starCorona") as
         | THREE.Mesh
         | undefined;
-      if (starMesh) starMesh.quaternion.copy(camera.quaternion);
+
+      if (coronaMeshObj) coronaMeshObj.quaternion.copy(camera.quaternion);
+
+      const coreMeshObj = scene.getObjectByName("starCore") as
+        | THREE.Mesh
+        | undefined;
+
+      if (coreMeshObj) coreMeshObj.rotation.y = elapsed * 0.05;
 
       // WASM Quantum Compute Interface tracking exact 3D vector slots
       const wasm = wasmRef.current;
@@ -401,7 +440,7 @@ function buildPlanetGlow(): THREE.Sprite {
 // ── Planet Material — temperature + mass driven ────────────────────────────
 function buildPlanetMaterial(
   massSolar: number,
-  eqTemp: number
+  eqTemp: number,
 ): THREE.MeshStandardMaterial {
   // Gas giant threshold: > 10 Earth masses
   const isGasGiant = massSolar > 10;
@@ -465,8 +504,8 @@ function buildHabitableZone(scene: THREE.Scene, lumLog: number): void {
   // Conservative habitable zone boundaries (Kopparapu 2013)
   const innerAU = Math.sqrt(L / 1.1) * AU_TO_WS;
   const outerAU = Math.sqrt(L / 0.53) * AU_TO_WS;
-  const midAU   = (innerAU + outerAU) / 2;
-  const tubeR   = Math.min((outerAU - innerAU) / 2, 0.18); // cap tube thickness
+  const midAU = (innerAU + outerAU) / 2;
+  const tubeR = Math.min((outerAU - innerAU) / 2, 0.18); // cap tube thickness
 
   if (tubeR <= 0 || midAU <= 0 || midAU > 25) return; // guard: skip if out of range
 
@@ -475,7 +514,7 @@ function buildHabitableZone(scene: THREE.Scene, lumLog: number): void {
   const mat = new THREE.MeshBasicMaterial({
     color: "#00ff88",
     transparent: true,
-    opacity: 0.025,          // ← was 0.06, much more subtle now
+    opacity: 0.025, // ← was 0.06, much more subtle now
     side: THREE.DoubleSide,
     depthWrite: false,
   });
@@ -489,7 +528,7 @@ function buildHabitableZone(scene: THREE.Scene, lumLog: number): void {
   const innerRingMat = new THREE.MeshBasicMaterial({
     color: "#00ff88",
     transparent: true,
-    opacity: 0.30,
+    opacity: 0.3,
     depthWrite: false,
   });
   const innerRing = new THREE.Mesh(innerRingGeo, innerRingMat);

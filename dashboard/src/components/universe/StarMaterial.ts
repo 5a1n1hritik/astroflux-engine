@@ -105,7 +105,84 @@ const vertexShader = /* glsl */ `
 `;
 
 // ── Fragment Shader ───────────────────────────────────────────────────────────
+// const fragmentShader = /* glsl */ `
+//   uniform float uTime;
+//   uniform vec3  uCoreColor;
+//   uniform vec3  uLimbColor;
+//   uniform vec3  uCoronaInner;
+//   uniform vec3  uCoronaOuter;
+//   uniform float uCoreRadius;
+//   uniform float uCorona1Falloff;
+//   uniform float uCorona2Falloff;
+//   uniform float uIntensity;
+
+//   varying vec2 vUv;
+
+//   float flicker(float t) {
+//     return 0.94
+//       + 0.03 * sin(t * 2.71828 + 1.4142)
+//       + 0.03 * cos(t * 1.61803 + 0.5772);
+//   }
+
+//   // Perlin-style plasma noise
+//   float hash(vec2 p) {
+//     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+//   }
+//   float noise(vec2 p) {
+//     vec2 i = floor(p);
+//     vec2 f = fract(p);
+//     vec2 u = f * f * (3.0 - 2.0 * f);
+//     return mix(
+//       mix(hash(i), hash(i + vec2(1,0)), u.x),
+//       mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), u.x),
+//       u.y
+//     );
+//   }
+
+//   void main() {
+//     vec2  centered = vUv - vec2(0.5);
+//     float dist     = length(centered);
+
+//     // ── Core ──────────────────────────────────────────────────────────────────
+//     float coreMask  = 1.0 - smoothstep(uCoreRadius - 0.01, uCoreRadius + 0.005, dist);
+//     float limbFactor = pow(1.0 - clamp(dist / uCoreRadius, 0.0, 1.0), 0.4);
+
+//     // Plasma noise on surface
+//     vec2 noiseUv = centered * 8.0 + vec2(uTime * 0.08, uTime * 0.05);
+//     float plasma  = noise(noiseUv) * 0.5 + noise(noiseUv * 2.1 + 1.7) * 0.3;
+//     float plasmaStrength = coreMask * plasma * 0.18;
+
+//     vec3 coreColor = mix(uLimbColor, uCoreColor, limbFactor + plasmaStrength);
+
+//     // ── Coronas ───────────────────────────────────────────────────────────────
+//     float flk        = flicker(uTime);
+//     float innerCorona = exp(-uCorona1Falloff * max(dist - uCoreRadius, 0.0));
+//     innerCorona      *= (1.0 - coreMask);
+
+//     float outerCorona = exp(-uCorona2Falloff * max(dist - uCoreRadius * 0.5, 0.0));
+//     outerCorona      *= flk * (1.0 - coreMask * 0.8);
+
+//     // ── Chromatic fringe ──────────────────────────────────────────────────────
+//     float ringMask = smoothstep(uCoreRadius - 0.015, uCoreRadius, dist)
+//                    * smoothstep(uCoreRadius + 0.02,  uCoreRadius, dist);
+//     vec3 ringColor = vec3(0.4, 0.85, 1.0) * ringMask * 0.35;
+
+//     // ── Composite ─────────────────────────────────────────────────────────────
+//     vec3 color = vec3(0.0);
+//     color += coreColor    * coreMask;
+//     color += uCoronaInner * innerCorona * 0.7;
+//     color += uCoronaOuter * outerCorona * 0.25;
+//     color += ringColor;
+
+//     float alpha = coreMask + innerCorona * 0.6 + outerCorona * 0.18;
+//     alpha = clamp(alpha, 0.0, 1.0);
+
+//     gl_FragColor = vec4(color * uIntensity, alpha);
+//   }
+// `;
 const fragmentShader = /* glsl */ `
+  precision highp float;
+
   uniform float uTime;
   uniform vec3  uCoreColor;
   uniform vec3  uLimbColor;
@@ -118,66 +195,94 @@ const fragmentShader = /* glsl */ `
 
   varying vec2 vUv;
 
-  float flicker(float t) {
-    return 0.94
-      + 0.03 * sin(t * 2.71828 + 1.4142)
-      + 0.03 * cos(t * 1.61803 + 0.5772);
-  }
-
-  // Perlin-style plasma noise
+  // ── Fast value noise ──────────────────────────────────────────────────────
   float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
   }
-  float noise(vec2 p) {
+
+  float vnoise(vec2 p) {
     vec2 i = floor(p);
     vec2 f = fract(p);
     vec2 u = f * f * (3.0 - 2.0 * f);
-    return mix(
-      mix(hash(i), hash(i + vec2(1,0)), u.x),
-      mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), u.x),
-      u.y
-    );
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+  }
+
+  // ── 3-octave fBm ─────────────────────────────────────────────────────────
+  float fbm3(vec2 p) {
+    float v = 0.0;
+    v += 0.500 * vnoise(p);
+    v += 0.250 * vnoise(p * 2.1 + vec2(3.7, 1.9));
+    v += 0.125 * vnoise(p * 4.3 + vec2(1.2, 7.4));
+    return v / 0.875;
+  }
+
+  // ── Domain warp (2-pass only) ─────────────────────────────────────────────
+  float plasma(vec2 uv, float t) {
+    float s = t * 0.06;
+    vec2 q = vec2(fbm3(uv + vec2(s, s * 0.7)),
+                  fbm3(uv + vec2(s * 0.8, 1.3 + s * 0.5)));
+    return fbm3(uv + 1.8 * q + vec2(t * 0.03));
+  }
+
+  // ── Flicker ───────────────────────────────────────────────────────────────
+  float flicker(float t) {
+    return 0.93 + 0.04 * sin(t * 2.7 + 1.4) + 0.03 * cos(t * 1.6 + 0.6);
   }
 
   void main() {
-    vec2  centered = vUv - vec2(0.5);
-    float dist     = length(centered);
+    vec2  c    = vUv - 0.5;
+    float dist = length(c);
 
-    // ── Core ──────────────────────────────────────────────────────────────────
-    float coreMask  = 1.0 - smoothstep(uCoreRadius - 0.01, uCoreRadius + 0.005, dist);
-    float limbFactor = pow(1.0 - clamp(dist / uCoreRadius, 0.0, 1.0), 0.4);
+    // ── Core mask & limb darkening ────────────────────────────────────────
+    float coreMask   = 1.0 - smoothstep(uCoreRadius - 0.012,
+                                         uCoreRadius + 0.006, dist);
+    float limbFactor = pow(max(0.0, 1.0 - dist / uCoreRadius), 0.45);
 
-    // Plasma noise on surface
-    vec2 noiseUv = centered * 8.0 + vec2(uTime * 0.08, uTime * 0.05);
-    float plasma  = noise(noiseUv) * 0.5 + noise(noiseUv * 2.1 + 1.7) * 0.3;
-    float plasmaStrength = coreMask * plasma * 0.18;
+    // ── Plasma turbulence on surface ──────────────────────────────────────
+    vec2  puv     = c * 4.5;
+    float p       = plasma(puv, uTime);          // [0..1]
+    float pBright = coreMask * smoothstep(0.55, 1.0, p) * 0.35;
+    float pDark   = coreMask * (1.0 - smoothstep(0.0, 0.4, p)) * 0.15;
 
-    vec3 coreColor = mix(uLimbColor, uCoreColor, limbFactor + plasmaStrength);
+    vec3 surfaceColor = mix(uLimbColor, uCoreColor, limbFactor + pBright - pDark);
 
-    // ── Coronas ───────────────────────────────────────────────────────────────
-    float flk        = flicker(uTime);
-    float innerCorona = exp(-uCorona1Falloff * max(dist - uCoreRadius, 0.0));
-    innerCorona      *= (1.0 - coreMask);
+    // Hot spot flares
+    float flare = coreMask * smoothstep(0.78, 1.0, p);
+    surfaceColor += uCoreColor * flare * 0.5;
 
-    float outerCorona = exp(-uCorona2Falloff * max(dist - uCoreRadius * 0.5, 0.0));
-    outerCorona      *= flk * (1.0 - coreMask * 0.8);
+    // ── Corona ────────────────────────────────────────────────────────────
+    float flk  = flicker(uTime);
+    float edgeDist = max(dist - uCoreRadius, 0.0);
 
-    // ── Chromatic fringe ──────────────────────────────────────────────────────
-    float ringMask = smoothstep(uCoreRadius - 0.015, uCoreRadius, dist)
-                   * smoothstep(uCoreRadius + 0.02,  uCoreRadius, dist);
-    vec3 ringColor = vec3(0.4, 0.85, 1.0) * ringMask * 0.35;
+    float inner = exp(-uCorona1Falloff * edgeDist) * (1.0 - coreMask);
+    float outer = exp(-uCorona2Falloff * max(dist - uCoreRadius * 0.5, 0.0))
+                * flk * (1.0 - coreMask * 0.75);
 
-    // ── Composite ─────────────────────────────────────────────────────────────
-    vec3 color = vec3(0.0);
-    color += coreColor    * coreMask;
-    color += uCoronaInner * innerCorona * 0.7;
-    color += uCoronaOuter * outerCorona * 0.25;
-    color += ringColor;
+    // Animated corona wisps
+    float wispAngle = atan(c.y, c.x) + uTime * 0.15;
+    float wisp = 0.5 + 0.5 * sin(wispAngle * 6.0 + uTime * 0.4);
+    outer *= (0.8 + 0.2 * wisp);
 
-    float alpha = coreMask + innerCorona * 0.6 + outerCorona * 0.18;
+    // ── Chromatic ring ────────────────────────────────────────────────────
+    float ring = smoothstep(uCoreRadius - 0.016, uCoreRadius,       dist)
+               * smoothstep(uCoreRadius + 0.022, uCoreRadius,       dist);
+    vec3 ringColor = vec3(0.4, 0.85, 1.0) * ring * 0.4;
+
+    // ── Composite ─────────────────────────────────────────────────────────
+    vec3 col = vec3(0.0);
+    col += surfaceColor  * coreMask;
+    col += uCoronaInner  * inner * 0.75;
+    col += uCoronaOuter  * outer * 0.30;
+    col += ringColor;
+
+    float alpha = coreMask + inner * 0.65 + outer * 0.20;
     alpha = clamp(alpha, 0.0, 1.0);
 
-    gl_FragColor = vec4(color * uIntensity, alpha);
+    gl_FragColor = vec4(col * uIntensity, alpha);
   }
 `;
 
@@ -202,7 +307,7 @@ export function createStarMaterial(teff: number = 5778): THREE.ShaderMaterial {
     blending:    THREE.AdditiveBlending,
     transparent: true,
     depthWrite:  false,
-    side:        THREE.FrontSide,
+    side:        THREE.DoubleSide,
   });
 }
 
