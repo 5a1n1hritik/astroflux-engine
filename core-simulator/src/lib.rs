@@ -10,6 +10,7 @@ pub struct PlanetOrbitConfig {
     pub eccentricity: f64,
     pub orbital_period_days: f64,
     pub inclination_degrees: f64,
+    pub equilibrium_temperature_k: f64, // Database map to fix shader thermodynamics
 }
 
 // ── 2. BATCH REQEUST STRUCTURE FROM NEXT.JS CLIENT ────────────────────────
@@ -17,6 +18,9 @@ pub struct PlanetOrbitConfig {
 pub struct SystemSimulationRequest {
     pub system_id: String,
     pub simulation_time_days: f64,
+    pub star_mass_solar: f64,        // NEW: Database field 'mass_solar' integrated
+    pub star_rotation_days: f64,     // NEW: Database column 'st_rotp' integration
+    pub system_distance_pc: f64,     // NEW: Database field 'distance_parsecs' integrated
     pub planets: Vec<PlanetOrbitConfig>,
 }
 
@@ -31,6 +35,9 @@ pub struct PlanetFrameState {
     pub velocity_y: f64,
     pub velocity_z: f64,
     pub phase_angle: f64,
+    pub relativistic_factor: f64,     // NEW: velocity correction indexing
+    pub phase_illumination: f64,      // NEW: Dynamic brightness factor (0.0 to 1.0)
+    pub thermal_velocity_scale: f64,  // NEW: Maxwell-Boltzmann speed reference for engine particles
 }
 
 // ── 4. COMPLETE SYSTEM REPOSITORY STATE WRAPPER ──────────────────────────
@@ -38,6 +45,8 @@ pub struct PlanetFrameState {
 pub struct SystemFrameState {
     pub system_id: String,
     pub simulation_time_days: f64,
+    pub star_rotation_angle_rad: f64,   // NEW: Real-time solar core rotation trace
+    pub base_parallax_arcsec: f64,      // NEW: Distance converted to observable parallax
     pub simulation_grid: Vec<PlanetFrameState>,
 }
 
@@ -64,7 +73,23 @@ pub fn compute_system_orbital_frame(js_request: JsValue) -> Result<JsValue, JsVa
 
     let pi = std::f64::consts::PI;
     let current_time = request.simulation_time_days;
+
+    //  Calculate base parallax calculation matrix using Distance (1 / d)
+    let parallax = if request.system_distance_pc > 0.0 { 1.0 / request.system_distance_pc } else { 0.0 };
+    
+    // Calculate Master Star Core current active angle standard rotation matrix
+    let star_rotation_angle = if request.star_rotation_days > 0.0 {
+        ((2.0 * pi * current_time) / request.star_rotation_days) % (2.0 * pi)
+    } else {
+        0.0
+    };
+
     let mut batch_states = Vec::with_capacity(request.planets.len());
+
+    // Standard Gravitational Constant scaling factor for Solar Mass systems (AU^3 / day^2)
+    // G * M_sun in standard units is approx 0.0002959122
+    let g_mu_constant = 0.0002959122; 
+    let mu_system = g_mu_constant * request.star_mass_solar;
 
     // Iterate over the system grid dynamically in a single WebAssembly memory thread
     for planet in request.planets {
@@ -104,16 +129,30 @@ pub fn compute_system_orbital_frame(js_request: JsValue) -> Result<JsValue, JsVa
         let z_pos = y_orbital * inclination_rad.sin();
 
         // Step F: Vis-Viva Velocity Calculations Integration
-        let mu = 4.0 * pi * pi * (a * a * a) / (planet.orbital_period_days * planet.orbital_period_days);
+        // let mu = 4.0 * pi * pi * (a * a * a) / (planet.orbital_period_days * planet.orbital_period_days);
         let r = (x_orbital * x_orbital + y_orbital * y_orbital).sqrt();
-        let v_mag = (mu * (2.0 / r - 1.0 / a)).sqrt();
+        let v_mag = (mu_system * (2.0 / r - 1.0 / a)).sqrt();
 
         let v_x_orbital = -v_mag * eccentric_anomaly.sin() / (1.0 - e * eccentric_anomaly.cos());
         let v_y_orbital = v_mag * (1.0 - e * e).sqrt() * eccentric_anomaly.cos() / (1.0 - e * eccentric_anomaly.cos());
 
         let v_x = v_x_orbital;
         let v_y = v_y_orbital * inclination_rad.cos();
-        let v_z = v_y_orbital * inclination_rad.sin();
+        let z_vel = v_y_orbital * inclination_rad.sin();
+
+        // Relativistic factor fallback check for high eccentricity close-in worlds (Mercury/Hot Jupiters standard)
+        let c_au_per_day = 173.145; // Speed of light in AU/day
+        let beta = v_mag / c_au_per_day;
+        let lorentz_factor = 1.0 / (1.0 - beta * beta).sqrt();
+
+        // ── SIMULATOR ALBEDO & THERMAL SCALING ENGINES ──
+        // A. Dynamic Phase Angle Illumination calculation (Lambertian phase function proxy mapping)
+        // Cosine matrix factor calculation based on phase angles alignment
+        let phase_illumination = (1.0 + true_anomaly.cos()) / 2.0;
+
+        // B. Gas Thermal Particle velocity proxy computation (Maxwell Boltzmann scaling standard)
+        // Root-mean-square speed indexing for canvas particle tail direction alignments
+        let thermal_scale = (planet.equilibrium_temperature_k / planet.mass_earth.max(0.1)).sqrt();
 
         batch_states.push(PlanetFrameState {
             planet_name: planet.planet_name,
@@ -122,14 +161,19 @@ pub fn compute_system_orbital_frame(js_request: JsValue) -> Result<JsValue, JsVa
             position_z: z_pos,
             velocity_x: v_x,
             velocity_y: v_y,
-            velocity_z: v_z,
+            velocity_z: z_vel,
             phase_angle: true_anomaly,
+            relativistic_factor: lorentz_factor,
+            phase_illumination,
+            thermal_velocity_scale: thermal_scale,
         });
     }
 
     let final_frame = SystemFrameState {
         system_id: request.system_id,
         simulation_time_days: current_time,
+        star_rotation_angle_rad: star_rotation_angle,
+        base_parallax_arcsec: parallax,
         simulation_grid: batch_states,
     };
 
