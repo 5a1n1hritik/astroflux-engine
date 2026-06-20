@@ -28,6 +28,14 @@ function telescopeToMission(telescope: string): string {
   return map[telescope.toUpperCase()] ?? "Kepler";
 }
 
+function generatePlanetSeed(name: string): number {
+  let hash = 5381;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 33) ^ name.charCodeAt(i);
+  }
+  return Math.abs(hash % 10000) / 10.0; // Return value between 0.0 and 1000.0
+}
+
 function SimulatorInner() {
   const searchParams = useSearchParams();
   const initialSystem = searchParams.get("system") ?? "Kepler-452 b";
@@ -148,6 +156,7 @@ function SimulatorInner() {
             <OrbitSimulator
               systemData={systemData}
               currentFrameTime={timeCounter}
+              planetSeed={generatePlanetSeed(systemData.metadata.target_name || "Unknown")} // ✅ INJECT THIS LINE
               onFrameUpdate={(phase) => {
                 fluxChartRef.current?.setPhase(phase);
                 setLivePhaseAngle(phase);

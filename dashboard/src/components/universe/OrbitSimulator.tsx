@@ -16,6 +16,7 @@ import {
   createStarCoreMaterial,
   createStarCoronaMaterial,
 } from "./graphics/star/StarShaderMaterial";
+import { createAtmosphereMaterial, createPlanetMaterial } from "../temp/planet/PlanetShaderMaterial";
 
 // ── 1. EMBEDDED HIGH-PRECISION ASTRO TIMER ────────────────────────────────────
 class CoreAstroTimer {
@@ -56,12 +57,14 @@ const AU_TO_WS = 3.2; // Scaling factor: 1 AU → 3.2 WebGL Space Units
 interface OrbitSimulatorProps {
   systemData: any; // Complete remote node payload containing metadata matrices
   currentFrameTime: number; // Monotonically increasing days clock ticker
+  planetSeed: number;
   onFrameUpdate: (phaseAngle: number) => void;
 }
 
 export default function OrbitSimulator({
   systemData,
   currentFrameTime,
+  planetSeed,
   onFrameUpdate,
 }: OrbitSimulatorProps) {
   // ── WASM Hook Properties Extraction Guardrail ───────────────────────────────
@@ -84,9 +87,10 @@ export default function OrbitSimulator({
   const timerRef = useRef<CoreAstroTimer>(new CoreAstroTimer());
   const rafRef = useRef<number>(0);
 
-  const planetRef = useRef<THREE.Mesh | null>(null);
   const starMatRef = useRef<THREE.ShaderMaterial | null>(null);
   const coronaMatRef = useRef<THREE.ShaderMaterial | null>(null);
+  const planetRef = useRef<THREE.Mesh | null>(null);
+  const planetMatRef = useRef<THREE.ShaderMaterial | null>(null);
   const pointLightRef = useRef<THREE.PointLight | null>(null);
 
   const wasmRef = useRef(wasmEngine);
@@ -208,27 +212,51 @@ export default function OrbitSimulator({
 
     buildHabitableZone(scene, systemData.metadata.star_luminosity ?? 0.0);
 
+    // ========================================================
+    // new code of planet
+    // ========================================================
+
     // 6. Terrestrial Planet Mesh Allocation
+    const eqTemp = systemData.metadata.equilibrium_temperature ?? 250.0;
     const planetRad = systemData.metadata.planet_radius || 1.0;
+    const planetMass = systemData.metadata.planet_mass ?? 1.0;
     const planetGeo = new THREE.SphereGeometry(
       Math.max(0.08, planetRad * 0.05),
       48,
       48,
     );
-    // const planetMat = new THREE.MeshStandardMaterial({
-    //   color: "#3a6fd8",
-    //   roughness: 0.75,
-    //   metalness: 0.05,
-    //   emissive: new THREE.Color("#0a1a40"),
-    //   emissiveIntensity: 0.25,
-    // });
-    const planetMat = buildPlanetMaterial(
-      systemData.metadata.planet_mass ?? 1.0,
-      systemData.metadata.equilibrium_temperature ?? 250.0,
+
+    // Dynamic Surface Color Shifting base calculation logic
+    let basePlanetHex = "#8b6344"; // Default rocky grey
+    let baseAtmoHex = "#3a8cf5";   // Default nitrogen scattering blue
+
+    if (planetMass > 10.0) { 
+      basePlanetHex = "#c8a96e"; // Jovian Gas Giant color
+      baseAtmoHex = "#22d3ee";   // Thick methane wrap cyan
+    } else if (eqTemp > 450.0) {
+      basePlanetHex = "#1a0800"; // Lava crust dark base
+      baseAtmoHex = "#ef4444";   // Volatile red sulfuric halo
+    } else if (eqTemp < 180.0) {
+      basePlanetHex = "#cce8ff"; // Ice world white sheen
+      baseAtmoHex = "#a78bfa";   // Cold purple scattering haze
+    }
+    const planetMat = createPlanetMaterial(eqTemp, planetRad, basePlanetHex, planetSeed, // Passing seed seamlessly down to GLSL memory buffers
+      systemData.metadata.planet_mass ?? 1.0
     );
     const planet = new THREE.Mesh(planetGeo, planetMat);
     scene.add(planet);
     planetRef.current = planet;
+    planetMatRef.current = planetMat;
+
+    const atmoColorHex = starTemperature < 3700 ? "#ff4400" : "#3a8cf5";
+    const atmoGeo = new THREE.SphereGeometry(
+      Math.max(0.08, planetRad * 0.05) * 1.15,
+      48,
+      48,
+    );
+    const atmoMat = createAtmosphereMaterial(baseAtmoHex);
+    const atmoMesh = new THREE.Mesh(atmoGeo, atmoMat);
+    planet.add(atmoMesh); // child of planet - moves with it seamlessly
 
     const glowSprite = buildPlanetGlow();
     planet.add(glowSprite);
@@ -295,6 +323,10 @@ export default function OrbitSimulator({
         | undefined;
 
       if (coreMeshObj) coreMeshObj.rotation.y = elapsed * 0.05;
+      
+      // if (planetMatRef.current)
+      //   planetMatRef.current.uniforms.uTime.value = elapsed;
+      
 
       // WASM Quantum Compute Interface tracking exact 3D vector slots
       const wasm = wasmRef.current;
