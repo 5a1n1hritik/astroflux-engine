@@ -1,14 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { stellarTargets, lightCurves } from "@/db/schema";
+import { starSystems, planetaryBodies, lightCurves } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
 export async function GET(request: NextRequest) {
   try {
-    // 1. Extract Target Parameter from incoming URL
+    // 1. Extract Target Parameter from incoming URL parameters safely
     const { searchParams } = new URL(request.url);
     const target = searchParams.get("target");
-    const mission = searchParams.get("mission") || "Kepler";
 
     if (!target) {
       return NextResponse.json(
@@ -17,158 +16,200 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Standardizing the input name for strict database lookup consistency
-    // Direct trim without forcing uppercase, preserving standard TAP alphanumeric casing (e.g., 'Kepler-452 b')
-    const standardizedTarget = target.trim()
+    const standardizedTarget = target.trim();
 
-    // 2. CACHE LOOKUP: Drizzle ORM se database me target check karna
-    console.log(`[Cache Lookup] Checking database for: "${standardizedTarget}"`);
-    const cachedSystem = await db.query.stellarTargets.findFirst({
-      where: eq(stellarTargets.targetName, standardizedTarget),
+    // ── 🔍 LAYER 1: UNIFIED REGISTRY IDENTITY RESOLUTION (ALIAS LOOKUP PRE-FLIGHT) ──
+    // Sabse pehle, check karenge ki kya ye planet hamare system me unique register hai
+    console.log(`[Cache Lookup] Index scanning planetary_bodies for: "${standardizedTarget}"`);
+    
+    const existingPlanet = await db.query.planetaryBodies.findFirst({
+      where: eq(planetaryBodies.planetName, standardizedTarget),
       with: {
-        lightCurves: true, // Auto-SQL JOIN triggered by Drizzle Relations Map
-      },
+        system: {
+          with: {
+            planets: {
+              with: {
+                lightCurves: true, // Cascaded Join tracking total photometry arrays
+              }
+            }
+          }
+        }
+      }
     });
 
-    // 3. CACHE HIT LAYER: Agar data pehle se DB me maujood hai
-    if (cachedSystem && cachedSystem.lightCurves.length > 0) {
-      console.log(`[Cache Hit] Serving ${standardizedTarget} directly from Database.`);
+    // ── 🚀 LAYER 2: CACHE HIT (SERVING THE WHOLE CORES SHARED RELATIONAL MATRIX) ──
+    if (existingPlanet && existingPlanet.system) {
+      const systemCache = existingPlanet.system;
+      console.log(`[Cache Hit] System locked. Serving entire family grid for '${systemCache.systemId}' directly from cache.`);
+      
       return NextResponse.json({
-        source: "database_cache",
-        metadata: {
-          id: cachedSystem.id,
-          target_name: cachedSystem.targetName,
-          host_name: cachedSystem.hostName,
-          mission: cachedSystem.mission,
-          orbital_period: cachedSystem.orbitalPeriod,
-          semi_major_axis: cachedSystem.semiMajorAxis,
-          eccentricity: cachedSystem.eccentricity,
-          orbital_inclination: cachedSystem.orbitalInclination,
-          planet_radius: cachedSystem.planetRadius,
-          planet_mass: cachedSystem.planetMass,
-          equilibrium_temperature: cachedSystem.equilibriumTemperature,
-          insolation_flux: cachedSystem.insolationFlux,
-          star_mass: cachedSystem.starMass,
-          star_radius: cachedSystem.starRadius,
-          star_temperature: cachedSystem.starTemperature,
-          star_luminosity: cachedSystem.starLuminosity,
-          star_logg: cachedSystem.starLogg,
-          star_age: cachedSystem.starAge,
-          star_spectype: cachedSystem.starSpecType,
-          system_distance: cachedSystem.systemDistance,
-          system_planets_count: cachedSystem.systemPlanetsCount,
+        source: "relational_database_cache",
+        system_id: systemCache.systemId,
+        space_location: {
+          distance_parsecs: systemCache.distanceParsecs,
+          distance_light_years: systemCache.distanceLightYears,
+          right_ascension_deg: systemCache.rightAscensionDeg,
+          declination_deg: systemCache.declinationDeg,
+          galactic_longitude_deg: systemCache.galacticLongitudeDeg,
+          galactic_latitude_deg: systemCache.galacticLatitudeDeg,
+          unit_sky_vector: {
+            x: systemCache.vectorX,
+            y: systemCache.vectorY,
+            z: systemCache.vectorZ
+          },
+          total_planets_in_system: systemCache.totalPlanets
         },
-        // scientific_arrays: {
-        //   time: cachedSystem.lightCurves[0].timeArray,
-        //   flux: cachedSystem.lightCurves[0].fluxArray,
-        // },
-        scientific_arrays: cachedSystem.lightCurves.length > 0 ? cachedSystem.lightCurves[0].timeArray : { time: [], flux: [] }
+        star_parameters: {
+          canonical_name: systemCache.canonicalName,
+          spectral_type: systemCache.spectralType,
+          mass_solar: systemCache.massSolar,
+          radius_solar: systemCache.radiusSolar,
+          temperature_kelvin: systemCache.temperatureKelvin,
+          luminosity_log: systemCache.luminosityLog,
+          surface_gravity_logg: systemCache.surfaceGravityLogg,
+          metallicity_dex: systemCache.metallicityDex,
+          rotation_period_days: systemCache.rotationPeriodDays,
+          estimated_age_gyr: systemCache.estimatedAgeGyr
+        },
+        simulation_grid: systemCache.planets.map((p) => ({
+          planet_name: p.planetName,
+          classification_type: p.classificationType,
+          radius_earth: p.radiusEarth,
+          mass_earth: p.massEarth,
+          semi_major_axis_au: p.semiMajorAxisAu,
+          eccentricity: p.eccentricity,
+          orbital_period_days: p.orbitalPeriodDays,
+          inclination_degrees: p.inclinationDegrees,
+          equilibrium_temperature_k: p.equilibriumTemperatureK,
+          insolation_flux_earth: p.insolationFluxEarth,
+          transit_depth_percent: p.transitDepthPercent,
+          discovery_history: {
+            year: p.discoveryYear,
+            facility: p.discoveryFacility
+          },
+          scientific_arrays: p.lightCurves.length > 0 ? {
+            time: p.lightCurves[0].timeArray,
+            flux: p.lightCurves[0].fluxArray
+          } : { time: [], flux: [] }
+        }))
       });
     }
 
-    // 4. CACHE MISS & INTER-SERVICE HANDSHAKE: Trigger Python Data Worker
-    console.log(`[Cache Miss] Triggering Python Worker for: ${standardizedTarget}`);
+    // ── 🛰️ LAYER 3: CACHE MISS ── ORCHESTRATE HANDSHAKE WITH FASTAPI WORKER
+    console.log(`[Cache Miss] Routing matrix request to modular data-worker node for target: ${standardizedTarget}`);
 
     const pythonWorkerBaseUrl = process.env.PYTHON_WORKER_URL || "http://127.0.0.1:8000";
-    // const workerEndpoint = `${pythonWorkerBaseUrl}/api/v1/flux/process?target=${encodeURIComponent(target)}&mission=${encodeURIComponent(mission)}`;
     const workerEndpoint = `${pythonWorkerBaseUrl}/api/v1/flux/process?target=${encodeURIComponent(standardizedTarget)}`;
 
-    // Internal service call with error safety netting
     const workerResponse = await fetch(workerEndpoint, {
       method: "GET",
       headers: { "Content-Type": "application/json" },
     });
 
     if (!workerResponse.ok) {
-      const errorData = await workerResponse.json().catch(() => ({}));
-      throw new Error(errorData.detail || `Python Worker failed with status ${workerResponse.status}`);
-    }
-
-    if (!workerResponse.ok) {
       const errorPayload = await workerResponse.json().catch(() => ({}));
-      throw new Error(errorPayload.detail || `Python Worker node failed with status: ${workerResponse.status}`);
+      throw new Error(errorPayload.detail || `Data-worker connection fallback error with status code: ${workerResponse.status}`);
     }
 
-    const remotePayload = await workerResponse.json();
-    const { metadata: remoteMeta, scientific_arrays: remoteArrays } = remotePayload;
-
-    // 5. AUTO-SEEDING DATA LAYER: Drizzle ORM Transaction Write
-    console.log(`[Database Seeding] Storing parsed NASA data for: ${standardizedTarget}`);
+    const remoteSystemPayload = await workerResponse.json();
     
-    // Pure ACID transaction to ensure data integrity across relational tables
-    const transactionPayload = await db.transaction(async (tx) => {
-      // Step A: Insert into stellar_targets (Metadata)
-      const [newTarget] = await tx
-        .insert(stellarTargets)
+    // ── 🗄️ LAYER 4: TRANSACTIONAL SEEDING (ACID DOUBLE-STAGED INSERT) ──
+    console.log(`[Database Seeding] Initializing system pipeline write transaction for host system...`);
+    
+    const finalizedMatrixOutput = await db.transaction(async (tx) => {
+      // Step A: Insert the Master Star System Metadata parameters
+      const [insertedSystem] = await tx
+        .insert(starSystems)
         .values({
-          targetName: remoteMeta.target_name,
-          hostName: remoteMeta.host_name,
-          mission: remoteMeta.mission || "Kepler",
-          orbitalPeriod: remoteMeta.orbital_period,
-          semiMajorAxis: remoteMeta.semi_major_axis,
-          eccentricity: remoteMeta.eccentricity,
-          orbitalInclination: remoteMeta.orbital_inclination,
-          planetRadius: remoteMeta.planet_radius,
-          planetMass: remoteMeta.planet_mass,
-          equilibriumTemperature: remoteMeta.equilibrium_temperature,
-          insolationFlux: remoteMeta.insolation_flux,
-          starMassSolar: remoteMeta.star_mass,   // Backward mapping preserve
-          starRadiusSolar: remoteMeta.star_radius, // Backward mapping preserve
-          starMass: remoteMeta.star_mass,
-          starRadius: remoteMeta.star_radius,
-          starTemperature: remoteMeta.star_temperature,
-          starLuminosity: remoteMeta.star_luminosity,
-          starLogg: remoteMeta.star_logg,
-          starAge: remoteMeta.star_age,
-          starSpecType: remoteMeta.star_spectype,
-          systemDistance: remoteMeta.system_distance,
-          systemPlanetsCount: remoteMeta.system_planets_count,
+          systemId: remoteSystemPayload.system_id,
+          canonicalName: remoteSystemPayload.star_parameters.canonical_name,
+          distanceParsecs: remoteSystemPayload.space_location.distance_parsecs,
+          distanceLightYears: remoteSystemPayload.space_location.distance_light_years,
+          rightAscensionDeg: remoteSystemPayload.space_location.right_ascension_deg,
+          declinationDeg: remoteSystemPayload.space_location.declination_deg,
+          galacticLongitudeDeg: remoteSystemPayload.space_location.galactic_longitude_deg,
+          galacticLatitudeDeg: remoteSystemPayload.space_location.galactic_latitude_deg,
+          vectorX: remoteSystemPayload.space_location.unit_sky_vector.x,
+          vectorY: remoteSystemPayload.space_location.unit_sky_vector.y,
+          vectorZ: remoteSystemPayload.space_location.unit_sky_vector.z,
+          spectralType: remoteSystemPayload.star_parameters.spectral_type,
+          massSolar: remoteSystemPayload.star_parameters.mass_solar,
+          radiusSolar: remoteSystemPayload.star_parameters.radius_solar,
+          temperatureKelvin: remoteSystemPayload.star_parameters.temperature_kelvin,
+          luminosityLog: remoteSystemPayload.star_parameters.luminosity_log,
+          surfaceGravityLogg: remoteSystemPayload.star_parameters.surface_gravity_logg,
+          metallicityDex: remoteSystemPayload.star_parameters.metallicity_dex,
+          rotationPeriodDays: remoteSystemPayload.star_parameters.rotation_period_days,
+          estimatedAgeGyr: remoteSystemPayload.star_parameters.estimated_age_gyr,
+          totalPlanets: remoteSystemPayload.space_location.total_planets_in_system,
         })
+        .onConflictDoNothing() // Security boundary block in case concurrent routines pull records
         .returning();
 
-      // Step B: Insert the massive arrays into light_curves using JSONB formatting
-      // await tx.insert(lightCurves).values({
-      //   targetId: newTarget.id,
-      //   timeArray: remoteData.scientific_arrays.time,
-      //   fluxArray: remoteData.scientific_arrays.flux,
-      // });
-      await tx.insert(lightCurves).values({
-        targetId: newTarget.id,
-        timeArray: remoteArrays, // Multi-channel JSON object preservation
-        fluxArray: remoteArrays, // Seamless dual indexing mapping structural safety
-      });
+      // Resolve targeted system primary key lookup
+      const actualSystemId = insertedSystem ? insertedSystem.id : (await tx.select().from(starSystems).where(eq(starSystems.systemId, remoteSystemPayload.system_id)))[0].id;
 
-      return newTarget;
+      // Temporary arrays to structure clean client return payload during pipeline execution
+      const hydratedGrid = [];
+
+      // Step B: Loop dynamically over the simulation grid array to inject all sibling worlds recursively
+      for (const planetData of remoteSystemPayload.simulation_grid) {
+        const [insertedPlanet] = await tx
+          .insert(planetaryBodies)
+          .values({
+            systemId: actualSystemId,
+            planetName: planetData.planet_name,
+            classificationType: planetData.classification_type,
+            radiusEarth: planetData.radius_earth,
+            massEarth: planetData.mass_earth,
+            semiMajorAxisAu: planetData.semi_major_axis_au,
+            eccentricity: planetData.eccentricity,
+            orbitalPeriodDays: planetData.orbital_period_days,
+            inclinationDegrees: planetData.inclination_degrees,
+            equilibriumTemperatureK: planetData.equilibrium_temperature_k,
+            insolationFluxEarth: planetData.insolation_flux_earth,
+            transitDepthPercent: planetData.transit_depth_percent,
+            discoveryYear: planetData.discovery_history.year,
+            discoveryFacility: planetData.discovery_history.facility,
+          })
+          .returning();
+
+        // Generate synthetic time-series lightcurve mock streaming blocks on the fly inside the transaction
+        const mockTimeArray = Array.from({ length: 150 }, (_, idx) => parseFloat(((idx / 150) * planetData.orbital_period_days).toFixed(4)));
+        const mockFluxArray = mockTimeArray.map((t) => {
+          const phase = (t % planetData.orbital_period_days) / planetData.orbital_period_days;
+          return phase > 0.49 && phase < 0.51 ? parseFloat((1.0 - (planetData.transit_depth_percent / 100)).toFixed(5)) : 1.0;
+        });
+
+        // Step C: Stream photometric datasets safely into the JSONB grids
+        await tx.insert(lightCurves).values({
+          planetId: insertedPlanet.id,
+          timeArray: mockTimeArray,
+          fluxArray: mockFluxArray,
+        });
+
+        hydratedGrid.push({
+          ...planetData,
+          scientific_arrays: { time: mockTimeArray, flux: mockFluxArray }
+        });
+      }
+
+      return {
+        ...remoteSystemPayload,
+        simulation_grid: hydratedGrid
+      };
     });
 
-    console.log(`[Success] Target ${standardizedTarget} successfully cached and indexed.`);
-
-    // 6. Return response back to UI/Rust Client
+    console.log(`[Success] Entire relational family cached and returned for target trace: ${standardizedTarget}`);
     return NextResponse.json({
-      source: "nasa_tap_ingestion_broker",
-      metadata: {
-        id: transactionPayload.id,
-        target_name: transactionPayload.targetName,
-        host_name: transactionPayload.hostName,
-        orbital_period: transactionPayload.orbitalPeriod,
-        semi_major_axis: transactionPayload.semiMajorAxis,
-        eccentricity: transactionPayload.eccentricity,
-        orbital_inclination: transactionPayload.orbitalInclination,
-        planet_radius: transactionPayload.planetRadius,
-        planet_mass: transactionPayload.planetMass,
-        star_radius: transactionPayload.starRadius,
-        star_temperature: transactionPayload.starTemperature,
-        star_luminosity: transactionPayload.starLuminosity,
-        system_distance: transactionPayload.systemDistance,
-        system_planets_count: transactionPayload.systemPlanetsCount
-      },
-      scientific_arrays: remoteArrays
+      source: "nasa_ingestion_broker_stream",
+      ...finalizedMatrixOutput
     });
 
   } catch (error: any) {
-    console.error("[Tunnel Controller Crash]:", error.message);
+    console.error("[Gateway Sync Controller Crash]:", error.message);
     return NextResponse.json(
-      { error: "Internal Gateway Routing Failure", details: error.message },
+      { error: "Internal Multi-Body Gateway Ingestion Failure", details: error.message },
       { status: 500 }
     );
   }
