@@ -6,11 +6,12 @@ use serde::{Serialize, Deserialize};
 pub struct PlanetOrbitConfig {
     pub planet_name: String,
     pub radius_earth: f64,
+    pub mass_earth: f64,                // FIX: Added missing mass property for physics scaling
     pub semi_major_axis_au: f64,
     pub eccentricity: f64,
     pub orbital_period_days: f64,
     pub inclination_degrees: f64,
-    pub equilibrium_temperature_k: f64, // Database map to fix shader thermodynamics
+    pub equilibrium_temperature_k: f64, 
 }
 
 // ── 2. BATCH REQEUST STRUCTURE FROM NEXT.JS CLIENT ────────────────────────
@@ -18,9 +19,9 @@ pub struct PlanetOrbitConfig {
 pub struct SystemSimulationRequest {
     pub system_id: String,
     pub simulation_time_days: f64,
-    pub star_mass_solar: f64,        // NEW: Database field 'mass_solar' integrated
-    pub star_rotation_days: f64,     // NEW: Database column 'st_rotp' integration
-    pub system_distance_pc: f64,     // NEW: Database field 'distance_parsecs' integrated
+    pub star_mass_solar: f64,        
+    pub star_rotation_days: f64,     
+    pub system_distance_pc: f64,     
     pub planets: Vec<PlanetOrbitConfig>,
 }
 
@@ -35,9 +36,9 @@ pub struct PlanetFrameState {
     pub velocity_y: f64,
     pub velocity_z: f64,
     pub phase_angle: f64,
-    pub relativistic_factor: f64,     // NEW: velocity correction indexing
-    pub phase_illumination: f64,      // NEW: Dynamic brightness factor (0.0 to 1.0)
-    pub thermal_velocity_scale: f64,  // NEW: Maxwell-Boltzmann speed reference for engine particles
+    pub relativistic_factor: f64,     // velocity correction indexing
+    pub phase_illumination: f64,      // Dynamic brightness factor (0.0 to 1.0)
+    pub thermal_velocity_scale: f64,  // Maxwell-Boltzmann speed reference for engine particles
 }
 
 // ── 4. COMPLETE SYSTEM REPOSITORY STATE WRAPPER ──────────────────────────
@@ -45,8 +46,8 @@ pub struct PlanetFrameState {
 pub struct SystemFrameState {
     pub system_id: String,
     pub simulation_time_days: f64,
-    pub star_rotation_angle_rad: f64,   // NEW: Real-time solar core rotation trace
-    pub base_parallax_arcsec: f64,      // NEW: Distance converted to observable parallax
+    pub star_rotation_angle_rad: f64,   // Real-time solar core rotation trace
+    pub base_parallax_arcsec: f64,      // Distance converted to observable parallax
     pub simulation_grid: Vec<PlanetFrameState>,
 }
 
