@@ -55,6 +55,7 @@ interface OrbitSimulatorProps {
   currentFrameTime: number;
   planetSeed: number;
   onFrameUpdate: (phaseAngle: number) => void;
+  showHabitableZone?: boolean;
 }
 
 export default function OrbitSimulator({
@@ -62,6 +63,7 @@ export default function OrbitSimulator({
   currentFrameTime,
   planetSeed,
   onFrameUpdate,
+  showHabitableZone = true,
 }: OrbitSimulatorProps) {
   const simulationGrid = systemData?.simulation_grid || [];
   const starParams = systemData?.star_parameters || {};
@@ -179,7 +181,9 @@ export default function OrbitSimulator({
     scene.add(coronaMesh);
     coronaMatRef.current = coronaMat;
 
-    buildHabitableZone(scene, starParams.luminosity_log ?? 0.0);
+    if (showHabitableZone) {
+      buildHabitableZone(scene, starParams.luminosity_log ?? 0.0);
+    }
 
     // Clear tracked meshes mapping node before population
     planetMeshesRef.current = [];
@@ -271,6 +275,13 @@ export default function OrbitSimulator({
       rendererRef.current = null;
     };
   }, [systemData, isReady]);
+
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    const torus = scene.getObjectByName("habitableZone");
+    if (torus) torus.visible = showHabitableZone;
+  }, [showHabitableZone]);
 
   // ── RENDER TICK TIMER AND QUANTUM BATCH EXTRACTION ─────────────────────────
   function startRenderLoop() {
@@ -479,5 +490,6 @@ function buildHabitableZone(scene: THREE.Scene, lumLog: number): void {
   });
   const torus = new THREE.Mesh(geo, mat);
   torus.rotation.x = Math.PI / 2;
+  torus.name = "habitableZone";
   scene.add(torus);
 }
