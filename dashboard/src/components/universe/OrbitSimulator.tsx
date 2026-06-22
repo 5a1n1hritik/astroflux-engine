@@ -1,62 +1,58 @@
 "use client";
 
-/**
- * OrbitSimulator.tsx
- * ─────────────────────────────────────────────────────────────────────────────
- * Full-screen Three.js WebGL scene mounted into #canvas-root.
- * Fully optimized for 3D Rust WASM state telemetry mapping and dynamic spectral colors.
- * ─────────────────────────────────────────────────────────────────────────────
- */
-
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { useWasmOrbit, type OrbitalConfig } from "@/hooks/useWasmOrbit";
+import { useWasmOrbit } from "@/hooks/useWasmOrbit";
 import {
   createStarCoreMaterial,
   createStarCoronaMaterial,
 } from "./graphics/star/StarShaderMaterial";
-import { createAtmosphereMaterial, createPlanetMaterial } from "../temp/planet/PlanetShaderMaterial";
+import {
+  createAtmosphereMaterial,
+  createPlanetMaterial,
+} from "../temp/planet/PlanetShaderMaterial";
 
-// ── 1. EMBEDDED HIGH-PRECISION ASTRO TIMER ────────────────────────────────────
-class CoreAstroTimer {
-  private _previousTime: number = 0;
-  private _currentTime: number = 0;
-  private _startTime: number = performance.now();
-  private _delta: number = 0;
-  private _elapsed: number = 0;
-  private _timescale: number = 1;
+const AU_TO_WS = 32.0; // Dynamic scale: 1 AU -> 32 WebGL Units to easily space out 8 planets
 
-  constructor() {
-    this.reset();
-  }
-  getDelta(): number {
-    return this._delta / 1000;
-  }
-  getElapsed(): number {
-    return this._elapsed / 1000;
-  }
-  reset(): this {
-    this._currentTime = performance.now() - this._startTime;
-    return this;
-  }
-  update(timestamp?: number): this {
-    this._previousTime = this._currentTime;
-    this._currentTime =
-      (timestamp !== undefined ? timestamp : performance.now()) -
-      this._startTime;
-    this._delta = (this._currentTime - this._previousTime) * this._timescale;
-    this._elapsed += this._delta;
-    return this;
-  }
+interface PlanetConfig {
+  planet_name: string;
+  classification_type: string;
+  radius_earth: number;
+  mass_earth: number;
+  semi_major_axis_au: number;
+  eccentricity: number;
+  orbital_period_days: number;
+  inclination_degrees: number;
+  equilibrium_temperature_k: number;
+  transit_depth_percent: number;
 }
 
-const AU_TO_WS = 3.2; // Scaling factor: 1 AU → 3.2 WebGL Space Units
+interface StarSystemNode {
+  system_id: string;
+  space_location: {
+    distance_parsecs: number;
+    distance_light_years: number;
+    right_ascension_deg: number;
+    declination_deg: number;
+    unit_sky_vector: { x: number; y: number; z: number };
+    total_planets_in_system: number;
+  };
+  star_parameters: {
+    canonical_name: string;
+    spectral_type: string;
+    mass_solar: number;
+    radius_solar: number;
+    temperature_kelvin: number;
+    rotation_period_days: number;
+    luminosity_log: number;
+  };
+  simulation_grid: PlanetConfig[];
+}
 
-// ── Props Structure Aligned with the 20-Keys Hydration API ────────────────────
 interface OrbitSimulatorProps {
-  systemData: any; // Complete remote node payload containing metadata matrices
-  currentFrameTime: number; // Monotonically increasing days clock ticker
+  systemData: StarSystemNode;
+  currentFrameTime: number;
   planetSeed: number;
   onFrameUpdate: (phaseAngle: number) => void;
 }
@@ -67,40 +63,34 @@ export default function OrbitSimulator({
   planetSeed,
   onFrameUpdate,
 }: OrbitSimulatorProps) {
-  // ── WASM Hook Properties Extraction Guardrail ───────────────────────────────
-  const orbitalConfig: OrbitalConfig = {
-    star_mass: systemData?.metadata?.star_mass ?? 1.0,
-    star_radius: systemData?.metadata?.star_radius ?? 1.0,
-    orbital_period_days: systemData?.metadata?.orbital_period ?? 365.25,
-    semi_major_axis_au: systemData?.metadata?.semi_major_axis ?? 1.0,
-    eccentricity: systemData?.metadata?.eccentricity ?? 0.0,
-    orbital_inclination_deg: systemData?.metadata?.orbital_inclination ?? 0.0, // New 3D vector axis tilt
-  };
+  const simulationGrid = systemData?.simulation_grid || [];
+  const starParams = systemData?.star_parameters || {};
+  const spaceLoc = systemData?.space_location || {};
 
-  const { engine: wasmEngine, isReady } = useWasmOrbit(orbitalConfig);
+  // Mount the singleton batch-processed WebAssembly memory bridge hook
+  const { engine: wasmEngine, isReady } = useWasmOrbit({
+    system_id: systemData?.system_id || "Unknown",
+  });
 
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
-  const timerRef = useRef<CoreAstroTimer>(new CoreAstroTimer());
   const rafRef = useRef<number>(0);
 
   const starMatRef = useRef<THREE.ShaderMaterial | null>(null);
   const coronaMatRef = useRef<THREE.ShaderMaterial | null>(null);
-  const planetRef = useRef<THREE.Mesh | null>(null);
-  const planetMatRef = useRef<THREE.ShaderMaterial | null>(null);
   const pointLightRef = useRef<THREE.PointLight | null>(null);
 
+  // Reference track list array to map all recursive planet objects
+  const planetMeshesRef = useRef<{ name: string; mesh: THREE.Mesh }[]>([]);
+
   const wasmRef = useRef(wasmEngine);
-  const configRef = useRef(orbitalConfig);
   const timeRef = useRef(currentFrameTime);
   const callbackRef = useRef(onFrameUpdate);
 
-  // Sync refs inside animation closure layers to eliminate stale render trees
   wasmRef.current = wasmEngine;
-  configRef.current = orbitalConfig;
   timeRef.current = currentFrameTime;
   callbackRef.current = onFrameUpdate;
 
@@ -112,10 +102,8 @@ export default function OrbitSimulator({
     const W = container.clientWidth || window.innerWidth;
     const H = container.clientHeight || window.innerHeight;
 
-    // 1. WebGL Initialization Node
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
-      alpha: false,
       powerPreference: "high-performance",
     });
     renderer.setSize(W, H);
@@ -128,29 +116,25 @@ export default function OrbitSimulator({
     scene.background = new THREE.Color("#020409");
     sceneRef.current = scene;
 
-    const camera = new THREE.PerspectiveCamera(42, W / H, 0.01, 500);
-    camera.position.set(0, 5.5, 7.0);
+    const camera = new THREE.PerspectiveCamera(45, W / H, 0.01, 1200);
+    camera.position.set(0, 60, 110); // Elevated viewport standard to survey the entire flat disk plane
     cameraRef.current = camera;
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.07;
-    controls.enablePan = false;
+    controls.dampingFactor = 0.05;
     controlsRef.current = controls;
 
-    // 2. Physics Lighting Grid
-    const ambient = new THREE.AmbientLight("#0d1a2e", 0.35);
+    const ambient = new THREE.AmbientLight("#0d1a2e", 0.45);
     scene.add(ambient);
 
-    // 3. Environment Particle Starfields
-    buildStarfield(scene, 2200, 0.022, 80, 0.55);
-    buildStarfield(scene, 600, 0.042, 40, 0.8);
+    // Deep space stellar dust starfields
+    buildStarfield(scene, 2500, 0.025, 150, 0.6);
+    buildStarfield(scene, 800, 0.045, 80, 0.8);
 
-    // =========================================================
-    // new code
-    // =========================================================
-    const starTemperature = systemData.metadata.star_temperature ?? 5778;
-    const starRadius = systemData.metadata.star_radius ?? 1.0;
+    // Setup host star core thermodynamic color parameters
+    const starTemperature = starParams.temperature_kelvin ?? 5778;
+    const starRadius = starParams.radius_solar ?? 1.0;
 
     const starPreset = {
       core:
@@ -159,107 +143,108 @@ export default function OrbitSimulator({
           : starTemperature > 8000
             ? "#e8f4ff"
             : "#fffef0",
-
       limb:
         starTemperature < 3700
           ? "#cc1100"
           : starTemperature > 8000
             ? "#80c0ff"
             : "#ffd060",
-
       corona:
         starTemperature < 3700
           ? "#ff3333"
           : starTemperature > 8000
             ? "#0066ff"
             : "#ffb830",
-
       temperature: starTemperature,
     };
 
-    const pointLight = new THREE.PointLight("#ffdf90", 4.0, 30);
+    const pointLight = new THREE.PointLight("#ffdf90", 4.0, 300, 0.5);
     pointLight.position.set(0, 0, 0);
     scene.add(pointLight);
     pointLightRef.current = pointLight;
 
-    // Core sphere
-    const sphereR = Math.max(0.8, starRadius * 0.85);
+    const sphereR = Math.max(1.2, starRadius * 1.2);
     const coreGeo = new THREE.SphereGeometry(sphereR, 64, 64);
     const coreMat = createStarCoreMaterial(starPreset);
     const coreMesh = new THREE.Mesh(coreGeo, coreMat);
-
     coreMesh.name = "starCore";
     scene.add(coreMesh);
-    starMatRef.current = coreMat; // reuse existing ref
+    starMatRef.current = coreMat;
 
-    // Corona billboard
-    const coronaSize = sphereR * 6.5;
+    const coronaSize = sphereR * 7.5;
     const coronaGeo = new THREE.PlaneGeometry(coronaSize, coronaSize);
     const coronaMat = createStarCoronaMaterial(starPreset);
     const coronaMesh = new THREE.Mesh(coronaGeo, coronaMat);
-
     coronaMesh.name = "starCorona";
     scene.add(coronaMesh);
     coronaMatRef.current = coronaMat;
 
-    // 5. 3D Oriented Analytical Orbit Path Wireframe Guide
-    buildOrbitPath(
-      scene,
-      configRef.current.semi_major_axis_au,
-      configRef.current.eccentricity,
-      configRef.current.orbital_inclination_deg,
-    );
+    buildHabitableZone(scene, starParams.luminosity_log ?? 0.0);
 
-    buildHabitableZone(scene, systemData.metadata.star_luminosity ?? 0.0);
+    // Clear tracked meshes mapping node before population
+    planetMeshesRef.current = [];
 
-    // ========================================================
-    // new code of planet
-    // ========================================================
+    // ── 🪐 SEQUENTIAL RECURSIVE MULTI-BODY SEEDING ────────────────────────────
+    simulationGrid.forEach((planet: PlanetConfig) => {
+      buildOrbitPath(
+        scene,
+        planet.semi_major_axis_au,
+        planet.eccentricity,
+        planet.inclination_degrees,
+      );
 
-    // 6. Terrestrial Planet Mesh Allocation
-    const eqTemp = systemData.metadata.equilibrium_temperature ?? 250.0;
-    const planetRad = systemData.metadata.planet_radius || 1.0;
-    const planetMass = systemData.metadata.planet_mass ?? 1.0;
-    const planetGeo = new THREE.SphereGeometry(
-      Math.max(0.08, planetRad * 0.05),
-      48,
-      48,
-    );
+      const eqTemp = planet.equilibrium_temperature_k ?? 250.0;
+      const planetRad = planet.radius_earth || 1.0;
+      const planetMass = planet.mass_earth ?? 1.0;
 
-    // Dynamic Surface Color Shifting base calculation logic
-    let basePlanetHex = "#8b6344"; // Default rocky grey
-    let baseAtmoHex = "#3a8cf5";   // Default nitrogen scattering blue
+      const planetGeo = new THREE.SphereGeometry(
+        Math.max(0.15, planetRad * 0.12),
+        48,
+        48,
+      );
 
-    if (planetMass > 10.0) { 
-      basePlanetHex = "#c8a96e"; // Jovian Gas Giant color
-      baseAtmoHex = "#22d3ee";   // Thick methane wrap cyan
-    } else if (eqTemp > 450.0) {
-      basePlanetHex = "#1a0800"; // Lava crust dark base
-      baseAtmoHex = "#ef4444";   // Volatile red sulfuric halo
-    } else if (eqTemp < 180.0) {
-      basePlanetHex = "#cce8ff"; // Ice world white sheen
-      baseAtmoHex = "#a78bfa";   // Cold purple scattering haze
-    }
-    const planetMat = createPlanetMaterial(eqTemp, planetRad, basePlanetHex, planetSeed, // Passing seed seamlessly down to GLSL memory buffers
-      systemData.metadata.planet_mass ?? 1.0
-    );
-    const planet = new THREE.Mesh(planetGeo, planetMat);
-    scene.add(planet);
-    planetRef.current = planet;
-    planetMatRef.current = planetMat;
+      let basePlanetHex = "#8b6344";
+      let baseAtmoHex = "#3a8cf5";
 
-    const atmoColorHex = starTemperature < 3700 ? "#ff4400" : "#3a8cf5";
-    const atmoGeo = new THREE.SphereGeometry(
-      Math.max(0.08, planetRad * 0.05) * 1.15,
-      48,
-      48,
-    );
-    const atmoMat = createAtmosphereMaterial(baseAtmoHex);
-    const atmoMesh = new THREE.Mesh(atmoGeo, atmoMat);
-    planet.add(atmoMesh); // child of planet - moves with it seamlessly
+      if (planetMass > 10.0) {
+        basePlanetHex = "#c8a96e";
+        baseAtmoHex = "#22d3ee";
+      } else if (eqTemp > 450.0) {
+        basePlanetHex = "#1a0800";
+        baseAtmoHex = "#ef4444";
+      } else if (eqTemp < 180.0) {
+        basePlanetHex = "#cce8ff";
+        baseAtmoHex = "#a78bfa";
+      }
 
-    const glowSprite = buildPlanetGlow();
-    planet.add(glowSprite);
+      const planetMat = createPlanetMaterial(
+        eqTemp,
+        planetRad,
+        basePlanetHex,
+        planetSeed,
+        planetMass,
+      );
+      const planetMesh = new THREE.Mesh(planetGeo, planetMat);
+      planetMesh.name = `planet_${planet.planet_name}`;
+      scene.add(planetMesh);
+
+      const atmoGeo = new THREE.SphereGeometry(
+        Math.max(0.15, planetRad * 0.12) * 1.15,
+        48,
+        48,
+      );
+      const atmoMat = createAtmosphereMaterial(baseAtmoHex);
+      const atmoMesh = new THREE.Mesh(atmoGeo, atmoMat);
+      planetMesh.add(atmoMesh);
+
+      const glowSprite = buildPlanetGlow();
+      planetMesh.add(glowSprite);
+
+      planetMeshesRef.current.push({
+        name: planet.planet_name,
+        mesh: planetMesh,
+      });
+    });
 
     const onResize = () => {
       if (!container || !cameraRef.current || !rendererRef.current) return;
@@ -272,7 +257,6 @@ export default function OrbitSimulator({
     };
     window.addEventListener("resize", onResize);
 
-    // Engage Render Loop Frame Controller
     startRenderLoop();
 
     return () => {
@@ -288,72 +272,80 @@ export default function OrbitSimulator({
     };
   }, [systemData, isReady]);
 
-  // ── RENDER TICK LOGIC ───────────────────────────────────────────────────────
+  // ── RENDER TICK TIMER AND QUANTUM BATCH EXTRACTION ─────────────────────────
   function startRenderLoop() {
-    const timer = timerRef.current;
+    const clock = new THREE.Clock();
 
-    function tick(timestamp: number) {
+    function tick() {
       rafRef.current = requestAnimationFrame(tick);
-      timer.update(timestamp);
-      const elapsed = timer.getElapsed();
+      const elapsed = clock.getElapsedTime();
 
       const scene = sceneRef.current;
       const renderer = rendererRef.current;
       const camera = cameraRef.current;
       const controls = controlsRef.current;
-      const planet = planetRef.current;
-      // const starMat = starMatRef.current;
 
-      if (!scene || !renderer || !camera || !planet) return;
+      if (!scene || !renderer || !camera) return;
 
       controls?.update();
       if (starMatRef.current) starMatRef.current.uniforms.uTime.value = elapsed;
-
       if (coronaMatRef.current)
         coronaMatRef.current.uniforms.uTime.value = elapsed;
 
       const coronaMeshObj = scene.getObjectByName("starCorona") as
         | THREE.Mesh
         | undefined;
-
       if (coronaMeshObj) coronaMeshObj.quaternion.copy(camera.quaternion);
 
-      const coreMeshObj = scene.getObjectByName("starCore") as
-        | THREE.Mesh
-        | undefined;
-
-      if (coreMeshObj) coreMeshObj.rotation.y = elapsed * 0.05;
-      
-      // if (planetMatRef.current)
-      //   planetMatRef.current.uniforms.uTime.value = elapsed;
-      
-
-      // WASM Quantum Compute Interface tracking exact 3D vector slots
+      // ── HIGH SPEED MULTI-BODY WASM COMPUTATION LOOP SWEEP ──────────────────
       const wasm = wasmRef.current;
       if (wasm && isReady) {
-        const frame = wasm.computeFrame(configRef.current, timeRef.current);
-        if (frame) {
-          // Direct 1:1 injection of 3D spatial values calculated inside the Rust stack
-          planet.position.set(
-            frame.position_x * AU_TO_WS,
-            frame.position_y * AU_TO_WS,
-            frame.position_z * AU_TO_WS,
-          );
+        const systemBatchRequest = {
+          system_id: systemData.system_id,
+          simulation_time_days: timeRef.current,
+          star_mass_solar: starParams.mass_solar ?? 1.0,
+          star_rotation_days: starParams.rotation_period_days ?? 25.0,
+          system_distance_pc: spaceLoc.distance_parsecs ?? 10.0,
+          planets: simulationGrid,
+        };
 
-          planet.rotation.y += 0.008;
+        const solvedSystemFrame =
+          wasm.compute_system_orbital_frame(systemBatchRequest);
 
-          if (pointLightRef.current) {
-            pointLightRef.current.position.lerp(
-              new THREE.Vector3(
-                planet.position.x * 0.05,
-                0.1,
-                planet.position.z * 0.05,
-              ),
-              0.02,
-            );
+        if (solvedSystemFrame && solvedSystemFrame.simulation_grid) {
+          // Sync live solar core corona rotation metrics dynamically
+          const coreMeshObj = scene.getObjectByName("starCore") as
+            | THREE.Mesh
+            | undefined;
+          if (coreMeshObj) {
+            coreMeshObj.rotation.y = solvedSystemFrame.star_rotation_angle_rad;
           }
 
-          callbackRef.current(frame.current_phase_angle);
+          solvedSystemFrame.simulation_grid.forEach((solvedPlanet: any) => {
+            const meshNode = planetMeshesRef.current.find(
+              (m) => m.name === solvedPlanet.planet_name,
+            );
+            if (meshNode) {
+              meshNode.mesh.position.set(
+                solvedPlanet.position_x * AU_TO_WS,
+                solvedPlanet.position_z * AU_TO_WS, // Structural matrix vector alignments
+                solvedPlanet.position_y * AU_TO_WS,
+              );
+
+              // Inject planet rotation and material uTime metrics safely
+              meshNode.mesh.rotation.y += 0.01;
+              const mat = meshNode.mesh.material as THREE.ShaderMaterial;
+              if (mat && mat.uniforms && mat.uniforms.uTime) {
+                mat.uniforms.uTime.value = elapsed;
+              }
+            }
+          });
+
+          if (solvedSystemFrame.simulation_grid.length > 0) {
+            callbackRef.current(
+              solvedSystemFrame.simulation_grid[0].phase_angle,
+            );
+          }
         }
       }
       renderer.render(scene, camera);
@@ -403,7 +395,7 @@ function buildOrbitPath(
   const a = semiMajorAu * AU_TO_WS;
   const b = a * Math.sqrt(1 - eccentricity ** 2);
   const c = a * eccentricity;
-  const inclinationRad = (inclinationDeg * Math.PI) / 180; // Degrees to radians transform
+  const inclinationRad = (inclinationDeg * Math.PI) / 180;
 
   const SEGMENTS = 360;
   const points: THREE.Vector3[] = [];
@@ -413,7 +405,6 @@ function buildOrbitPath(
     const x_raw = a * Math.cos(theta) - c;
     const y_raw = b * Math.sin(theta);
 
-    // Aligned rotation projection calculation vectors tracking matching Rust lib.rs math structures
     points.push(
       new THREE.Vector3(
         x_raw,
@@ -426,10 +417,10 @@ function buildOrbitPath(
   const geo = new THREE.BufferGeometry().setFromPoints(points);
   const mat = new THREE.LineDashedMaterial({
     color: "#1e6080",
-    dashSize: 0.12,
-    gapSize: 0.06,
+    dashSize: 0.3,
+    gapSize: 0.2,
     transparent: true,
-    opacity: 0.55,
+    opacity: 0.4,
     depthWrite: false,
   });
   const line = new THREE.LineLoop(geo, mat);
@@ -451,8 +442,8 @@ function buildPlanetGlow(): THREE.Sprite {
     SIZE / 2,
     SIZE / 2,
   );
-  gradient.addColorStop(0.0, "rgba(80, 140, 255, 0.55)");
-  gradient.addColorStop(0.3, "rgba(50, 100, 220, 0.20)");
+  gradient.addColorStop(0.0, "rgba(80, 140, 255, 0.45)");
+  gradient.addColorStop(0.3, "rgba(50, 100, 220, 0.15)");
   gradient.addColorStop(1.0, "rgba(0,0,0,0.0)");
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, SIZE, SIZE);
@@ -464,118 +455,29 @@ function buildPlanetGlow(): THREE.Sprite {
       blending: THREE.AdditiveBlending,
       transparent: true,
       depthWrite: false,
-      opacity: 0.8,
+      opacity: 0.7,
     }),
   );
 }
 
-// ── Planet Material — temperature + mass driven ────────────────────────────
-function buildPlanetMaterial(
-  massSolar: number,
-  eqTemp: number,
-): THREE.MeshStandardMaterial {
-  // Gas giant threshold: > 10 Earth masses
-  const isGasGiant = massSolar > 10;
-
-  if (isGasGiant) {
-    // Gas giant — banded stripes, blue-beige
-    return new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#c8a96e"),
-      roughness: 0.4,
-      metalness: 0.1,
-      emissive: new THREE.Color("#3a2800"),
-      emissiveIntensity: 0.15,
-    });
-  }
-
-  // Rocky planet — temperature-based color
-  if (eqTemp > 700) {
-    // Lava world — dark with red glow
-    return new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#1a0800"),
-      roughness: 0.9,
-      metalness: 0.0,
-      emissive: new THREE.Color("#ff2200"),
-      emissiveIntensity: 0.4,
-    });
-  } else if (eqTemp > 350) {
-    // Hot rocky — brown-grey
-    return new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#8b6344"),
-      roughness: 0.85,
-      metalness: 0.05,
-      emissive: new THREE.Color("#220800"),
-      emissiveIntensity: 0.1,
-    });
-  } else if (eqTemp > 200 && eqTemp < 320) {
-    // Habitable zone — blue-green (Earth-like)
-    return new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#3a6fd8"),
-      roughness: 0.75,
-      metalness: 0.05,
-      emissive: new THREE.Color("#0a1a40"),
-      emissiveIntensity: 0.2,
-    });
-  } else {
-    // Ice world — white-blue
-    return new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#cce8ff"),
-      roughness: 0.6,
-      metalness: 0.1,
-      emissive: new THREE.Color("#001833"),
-      emissiveIntensity: 0.08,
-    });
-  }
-}
-
-// ── Habitable Zone Torus — st_lum driven ─────────────────────────────────────
 function buildHabitableZone(scene: THREE.Scene, lumLog: number): void {
-  // L = 10^lumLog (solar luminosities)
   const L = Math.pow(10, lumLog);
-
-  // Conservative habitable zone boundaries (Kopparapu 2013)
   const innerAU = Math.sqrt(L / 1.1) * AU_TO_WS;
   const outerAU = Math.sqrt(L / 0.53) * AU_TO_WS;
   const midAU = (innerAU + outerAU) / 2;
-  const tubeR = Math.min((outerAU - innerAU) / 2, 0.18); // cap tube thickness
+  const tubeR = Math.min((outerAU - innerAU) / 2, 0.6);
 
-  if (tubeR <= 0 || midAU <= 0 || midAU > 25) return; // guard: skip if out of range
+  if (tubeR <= 0 || midAU <= 0 || midAU > 400) return;
 
-  // Solid fill — very subtle
   const geo = new THREE.TorusGeometry(midAU, tubeR, 2, 128);
   const mat = new THREE.MeshBasicMaterial({
     color: "#00ff88",
     transparent: true,
-    opacity: 0.025, // ← was 0.06, much more subtle now
+    opacity: 0.012,
     side: THREE.DoubleSide,
     depthWrite: false,
   });
   const torus = new THREE.Mesh(geo, mat);
   torus.rotation.x = Math.PI / 2;
-  torus.name = "habitableZone";
   scene.add(torus);
-
-  // Inner edge ring only — clean line
-  const innerRingGeo = new THREE.TorusGeometry(innerAU, 0.015, 2, 128);
-  const innerRingMat = new THREE.MeshBasicMaterial({
-    color: "#00ff88",
-    transparent: true,
-    opacity: 0.3,
-    depthWrite: false,
-  });
-  const innerRing = new THREE.Mesh(innerRingGeo, innerRingMat);
-  innerRing.rotation.x = Math.PI / 2;
-  scene.add(innerRing);
-
-  // Outer edge ring
-  const outerRingGeo = new THREE.TorusGeometry(outerAU, 0.015, 2, 128);
-  const outerRingMat = new THREE.MeshBasicMaterial({
-    color: "#00ff88",
-    transparent: true,
-    opacity: 0.15,
-    depthWrite: false,
-  });
-  const outerRing = new THREE.Mesh(outerRingGeo, outerRingMat);
-  outerRing.rotation.x = Math.PI / 2;
-  scene.add(outerRing);
 }
