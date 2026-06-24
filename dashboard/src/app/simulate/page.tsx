@@ -7,12 +7,12 @@ import OrbitSimulator from "@/components/universe/OrbitSimulator";
 // ── IMPORT MODULAR HUD COMPONENTS (SRP COMPLIANT) ───────────────────────────
 import HeaderToken from "@/components/universe/hud/HeaderToken";
 import TargetConsole from "@/components/universe/hud/TargetConsole";
-// import TelemetryPanel from "@/components/universe/hud/TelemetryPanel";
 import ViewSwitcher, { ViewMode } from "@/components/universe/hud/ViewSwitcher";
 import BottomInfoCard from "@/components/universe/hud/BottomInfoCard";
 import DistanceOverlay from "@/components/universe/hud/DistanceOverlay";
 import HabitableZoneToggle from "@/components/universe/hud/HabitableZoneToggle";
 import BottomControlBar from "@/components/universe/hud/BottomControlBar";
+import { TIME_PRESETS } from "@/lib/timePresets";
 
 function generatePlanetSeed(name: string): number {
   let hash = 5381;
@@ -37,10 +37,11 @@ function SimulatorInner() {
 
   const [viewMode, setViewMode] = useState<ViewMode>("planet");
   const [habitableZone, setHabitableZone] = useState(true);
-  const [simRate, setSimRate] = useState(1.0);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [rateIndex, setRateIndex] = useState<number>(0);
 
   const timerRef = useRef<number>(0);
+  const lastTimestampRef = useRef<number>(0);
   const animationFrameId = useRef<number>(0);
   const simRateRef = useRef<number>(1.0);
 
@@ -71,29 +72,27 @@ function SimulatorInner() {
   }, []);
 
   useEffect(() => {
-    simRateRef.current = simRate;
-  }, [simRate]);
+    simRateRef.current = TIME_PRESETS[rateIndex].factor;
+  }, [rateIndex]);
 
   // 2. MONOTONIC TIME CLOCK TICKER FOR WASM SIMULATOR
   useEffect(() => {
     if (!systemData || !isPlaying) return;
 
-    const renderLoopTicker = () => {
-      // Step A: Progressive stepping multiplier (1 sec runtime = 0.4 days acceleration)
-      timerRef.current += 1.4 * simRateRef.current;
+    const renderLoopTicker = (timestamp: number) => {
+      if (lastTimestampRef.current === 0) lastTimestampRef.current = timestamp;
+      const dtReal = (timestamp - lastTimestampRef.current) / 1000; // real seconds elapsed
+      lastTimestampRef.current = timestamp;
+      // dtReal * factor = simulation seconds, / 86400 = simulation days
+      timerRef.current += (dtReal * simRateRef.current) / 86_400;
       setTimeCounter(timerRef.current);
+
       animationFrameId.current = requestAnimationFrame(renderLoopTicker);
     };
 
     animationFrameId.current = requestAnimationFrame(renderLoopTicker);
     return () => cancelAnimationFrame(animationFrameId.current);
   }, [systemData, isPlaying]);
-
-  // Rate change handler:
-  const handleRateChange = (val: number) => {
-    setSimRate(val);
-    // timerRef increment speed update
-  };
 
   return (
     <div className="hud-viewport bg-black text-white min-h-screen relative font-mono overflow-hidden select-none">
@@ -156,10 +155,8 @@ function SimulatorInner() {
 
       {/* ── G. BOTTOM CONTROL BAR ────────────────────────────────────────── */}
       <BottomControlBar
-        rate={simRate}
-        onRateChange={(val) => {
-          setSimRate(val);
-        }}
+        rateIndex={rateIndex}
+        onRateChange={setRateIndex}
         isFullscreen={isFullscreen}
         onFullscreen={() => {
           if (!document.fullscreenElement) {
@@ -170,6 +167,8 @@ function SimulatorInner() {
             setIsFullscreen(false);
           }
         }}
+        viewMode={viewMode}
+        systemData={systemData}
       />
 
       {/* ── C. RIGHT LAYER: UNIFIED QUANTUM SPECTRAL TELEMETRY ───────────── */}

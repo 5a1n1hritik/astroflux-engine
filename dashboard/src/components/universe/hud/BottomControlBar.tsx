@@ -1,49 +1,179 @@
 "use client";
 
-/**
- * BottomControlBar.tsx
- * src/components/universe/hud/BottomControlBar.tsx
- * ─────────────────────────────────────────────────────────────────────────────
- * NASA-style bottom control bar.
- * Left: RATE label + horizontal slider
- * Center: rate value display (e.g. "1 sec/sec")
- * Right: global icon controls
- * ─────────────────────────────────────────────────────────────────────────────
- */
-
-import { useCallback } from "react";
+import { useMemo } from "react";
+import type { ViewMode } from "./ViewSwitcher";
+import { TIME_PRESETS } from "@/lib/timePresets";
 
 export interface BottomControlBarProps {
-  rate: number;          // 0.1 → 10.0
-  onRateChange: (val: number) => void;
+  rateIndex: number;
+  onRateChange: (index: number) => void;
   isFullscreen: boolean;
   onFullscreen: () => void;
+  viewMode: ViewMode;
+  systemData: any;
 }
 
-const MIN_RATE = 0.1;
-const MAX_RATE = 10.0;
+const PRESET_MAX = TIME_PRESETS.length - 1;
 
-function formatRate(rate: number): string {
-  if (rate < 1) return `${rate.toFixed(1)} sec/sec`;
-  if (rate === 1) return "1 sec/sec";
-  return `${rate.toFixed(1)}x sec/sec`;
+function resolveStarChips(sd: any) {
+  const spectral = sd?.star_parameters?.spectral_type ?? "G";
+  const cls = spectral.charAt(0).toUpperCase();
+  const grid: any[] = sd?.simulation_grid ?? [];
+  const chips = [
+    ...new Set(
+      grid
+        .map((p: any) => p.planet_name?.replace(/\s+[a-z]$/i, "").trim())
+        .filter(Boolean),
+    ),
+  ].slice(0, 4) as string[];
+  return { label: `MORE SYSTEMS WITH ${cls}-TYPE STARS`, chips };
+}
+
+function resolvePlanetChips(sd: any) {
+  const grid: any[] = sd?.simulation_grid ?? [];
+  const tagMap: Record<string, string> = {
+    "Rocky Terrestrial (Earth-like)": "Super Earths",
+    "Super-Earth": "Super Earths",
+    "Neptune-like (Ice Giant)": "Neptune-like",
+    "Gas Giant": "Gas Giants",
+    "Unclassified Exoplanet": "Transit Discoveries",
+  };
+  const tags = [
+    ...new Set(
+      grid
+        .map((p: any) => tagMap[p.classification_type] ?? p.classification_type)
+        .filter(Boolean),
+    ),
+  ].slice(0, 3) as string[];
+  const extra = ["Transit Discoveries", "Kepler Discoveries"].filter(
+    (t) => !tags.includes(t),
+  );
+  const allTags = [...tags, ...extra].slice(0, 4);
+  const planets = grid
+    .slice(0, 4)
+    .map((p: any) => p.planet_name)
+    .filter(Boolean);
+  return { tags: allTags, planets };
+}
+
+const label: React.CSSProperties = {
+  fontFamily: "var(--font-mono,'Space Mono',monospace)",
+  fontSize: 9,
+  letterSpacing: "0.16em",
+  textTransform: "uppercase",
+  color: "rgba(100,116,139,.80)",
+  flexShrink: 0,
+  whiteSpace: "nowrap",
+};
+const chip: React.CSSProperties = {
+  background: "none",
+  border: "none",
+  cursor: "pointer",
+  fontFamily: "var(--font-mono,'Space Mono',monospace)",
+  fontSize: 10,
+  letterSpacing: "0.04em",
+  color: "rgba(203,213,225,.75)",
+  padding: "2px 8px",
+  borderRadius: 3,
+  whiteSpace: "nowrap",
+};
+const icon: React.CSSProperties = {
+  background: "none",
+  border: "none",
+  cursor: "pointer",
+  padding: 4,
+  color: "rgba(100,116,139,.70)",
+  display: "flex",
+  transition: "color 0.18s ease",
+};
+
+function Icons({
+  isFullscreen,
+  onFullscreen,
+}: {
+  isFullscreen: boolean;
+  onFullscreen: () => void;
+}) {
+  return (
+    <div
+      style={{
+        marginLeft: "auto",
+        display: "flex",
+        alignItems: "center",
+        gap: 16,
+        flexShrink: 0,
+      }}
+    >
+      <button
+        onClick={onFullscreen}
+        style={icon}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.color = "rgba(226,232,240,.90)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.color = "rgba(100,116,139,.70)";
+        }}
+      >
+        {isFullscreen ? (
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path
+              d="M5 1v4H1M9 1v4h4M5 13v-4H1M9 13v-4h4"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path
+              d="M1 5V1h4M9 1h4v4M13 9v4H9M5 13H1V9"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        )}
+      </button>
+      <button
+        style={icon}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.color = "rgba(226,232,240,.90)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.color = "rgba(100,116,139,.70)";
+        }}
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <circle cx="7" cy="7" r="2" stroke="currentColor" strokeWidth="1.4" />
+          <path
+            d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.5 2.5l1 1M10.5 10.5l1 1M11.5 2.5l-1 1M3.5 10.5l-1 1"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+          />
+        </svg>
+      </button>
+    </div>
+  );
 }
 
 export default function BottomControlBar({
-  rate,
+  rateIndex,
   onRateChange,
   isFullscreen,
   onFullscreen,
+  viewMode,
+  systemData,
 }: BottomControlBarProps) {
-  const handleSlider = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      onRateChange(parseFloat(e.target.value));
-    },
-    [onRateChange]
+  
+  const fillPct = (rateIndex / PRESET_MAX) * 100;
+  const starData = useMemo(() => resolveStarChips(systemData), [systemData]);
+  const planetData = useMemo(
+    () => resolvePlanetChips(systemData),
+    [systemData],
   );
-
-  // Slider fill % for custom track styling
-  const fillPct = ((rate - MIN_RATE) / (MAX_RATE - MIN_RATE)) * 100;
 
   return (
     <>
@@ -92,119 +222,159 @@ export default function BottomControlBar({
 
       <div
         style={{
-          position:       "absolute",
-          bottom:         0,
-          left:           0,
-          right:          0,
-          height:         44,
-          display:        "flex",
-          alignItems:     "center",
-          paddingLeft:    20,
-          paddingRight:   20,
-          gap:            16,
-          background:     "rgba(2,4,9,0.78)",
+          position: "absolute",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          height: 44,
+          display: "flex",
+          alignItems: "center",
+          paddingLeft: 20,
+          paddingRight: 20,
+          gap: 16,
+          background: "rgba(2,4,9,0.78)",
           backdropFilter: "blur(20px)",
           WebkitBackdropFilter: "blur(20px)",
-          borderTop:      "1px solid rgba(226,232,240,0.06)",
-          zIndex:         20,
+          borderTop: "1px solid rgba(226,232,240,0.06)",
+          zIndex: 20,
         }}
         aria-label="Simulation control bar"
       >
-        {/* ── LEFT: RATE label ── */}
-        <span
-          style={{
-            fontFamily:    "var(--font-mono, 'Space Mono', monospace)",
-            fontSize:      9,
-            letterSpacing: "0.18em",
-            textTransform: "uppercase",
-            color:         "rgba(100,116,139,0.80)",
-            flexShrink:    0,
-          }}
-        >
-          RATE
-        </span>
+        {/* SYSTEM — rate slider */}
+        {viewMode === "system" && (
+          <>
+            {/* ── LEFT: RATE label ── */}
+            <span
+              style={{
+                fontFamily: "var(--font-mono, 'Space Mono', monospace)",
+                fontSize: 9,
+                letterSpacing: "0.18em",
+                textTransform: "uppercase",
+                color: "rgba(100,116,139,0.80)",
+                flexShrink: 0,
+              }}
+            >
+              RATE
+            </span>
 
-        {/* ── SLIDER ── */}
-        <div style={{ flex: 1, display: "flex", alignItems: "center", maxWidth: 460 }}>
-          <input
-            type="range"
-            className="af-rate-slider"
-            min={MIN_RATE}
-            max={MAX_RATE}
-            step={0.1}
-            value={rate}
-            onChange={handleSlider}
-            aria-label="Simulation rate"
-            aria-valuemin={MIN_RATE}
-            aria-valuemax={MAX_RATE}
-            aria-valuenow={rate}
-            aria-valuetext={formatRate(rate)}
-          />
-        </div>
+            {/* ── SLIDER ── */}
+            <div
+              style={{
+                flex: 1,
+                display: "flex",
+                alignItems: "center",
+                maxWidth: 460,
+              }}
+            >
+              <input
+                type="range"
+                className="af-rate-slider"
+                min={0}
+                max={PRESET_MAX}
+                step={1}
+                value={rateIndex}
+                onChange={(e) => onRateChange(parseInt(e.target.value))}
+                aria-label="Simulation rate"
+              />
+            </div>
 
-        {/* ── CENTER: rate value ── */}
-        <span
-          style={{
-            fontFamily:    "var(--font-mono, 'Space Mono', monospace)",
-            fontSize:      10,
-            letterSpacing: "0.06em",
-            color:         "rgba(203,213,225,0.80)",
-            flexShrink:    0,
-            minWidth:      80,
-            textAlign:     "center",
-          }}
-        >
-          {formatRate(rate)}
-        </span>
+            {/* ── CENTER: rate value ── */}
+            <span
+              style={{
+                fontFamily: "var(--font-mono, 'Space Mono', monospace)",
+                fontSize: 10,
+                letterSpacing: "0.06em",
+                color: "rgba(203,213,225,0.80)",
+                flexShrink: 0,
+                minWidth: 100,
+                textAlign: "center",
+              }}
+            >
+              {TIME_PRESETS[rateIndex].label}
+            </span>
 
-        {/* ── RIGHT: global controls ── */}
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 16 }}>
-          {/* Fullscreen toggle */}
-          <button
-            onClick={onFullscreen}
-            aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-            style={{
-              background: "none",
-              border:     "none",
-              cursor:     "pointer",
-              padding:    4,
-              color:      "rgba(100,116,139,0.70)",
-              display:    "flex",
-              transition: "color 0.18s ease",
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.color = "rgba(226,232,240,0.90)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = "rgba(100,116,139,0.70)"; }}
-          >
-            {isFullscreen ? (
-              // Minimize icon
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M5 1v4H1M9 1v4h4M5 13v-4H1M9 13v-4h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            ) : (
-              // Maximize icon
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M1 5V1h4M9 1h4v4M13 9v4H9M5 13H1V9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            )}
-          </button>
+            <Icons isFullscreen={isFullscreen} onFullscreen={onFullscreen} />
+          </>
+        )}
 
-          {/* Settings icon */}
-          <button
-            aria-label="Settings"
-            style={{
-              background: "none", border: "none", cursor: "pointer",
-              padding: 4, color: "rgba(100,116,139,0.70)", display: "flex",
-              transition: "color 0.18s ease",
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.color = "rgba(226,232,240,0.90)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = "rgba(100,116,139,0.70)"; }}
-          >
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <circle cx="7" cy="7" r="2" stroke="currentColor" strokeWidth="1.4"/>
-              <path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.5 2.5l1 1M10.5 10.5l1 1M11.5 2.5l-1 1M3.5 10.5l-1 1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-            </svg>
-          </button>
-        </div>
+        {/* STAR — more systems */}
+        {viewMode === "star" && systemData && (
+          <>
+            <span style={label}>{starData.label}:</span>
+            <span
+              style={{
+                color: "rgba(71,85,105,.50)",
+                fontSize: 10,
+                flexShrink: 0,
+              }}
+            >
+              |
+            </span>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                overflow: "hidden",
+              }}
+            >
+              {starData.chips.map((c: string) => (
+                <button key={c} style={chip}>
+                  {c}
+                </button>
+              ))}
+            </div>
+            <Icons isFullscreen={isFullscreen} onFullscreen={onFullscreen} />
+          </>
+        )}
+
+        {/* PLANET — more planets like this */}
+        {viewMode === "planet" && systemData && (
+          <>
+            <span style={label}>MORE PLANETS LIKE THIS:</span>
+            <span
+              style={{
+                color: "rgba(71,85,105,.50)",
+                fontSize: 10,
+                flexShrink: 0,
+              }}
+            >
+              |
+            </span>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 2,
+                overflow: "hidden",
+              }}
+            >
+              {planetData.tags.map((t: string) => (
+                <button key={t} style={chip}>
+                  {t}
+                </button>
+              ))}
+              <span
+                style={{
+                  color: "rgba(71,85,105,.50)",
+                  fontSize: 10,
+                  margin: "0 4px",
+                }}
+              >
+                |
+              </span>
+              {planetData.planets.slice(0, 3).map((p: string) => (
+                <button
+                  key={p}
+                  style={{ ...chip, color: "rgba(148,163,184,.70)" }}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+            <Icons isFullscreen={isFullscreen} onFullscreen={onFullscreen} />
+          </>
+        )}
       </div>
     </>
   );
