@@ -5,13 +5,12 @@ import { useSearchParams } from "next/navigation";
 import OrbitSimulator from "@/components/universe/OrbitSimulator";
 
 // ── IMPORT MODULAR HUD COMPONENTS (SRP COMPLIANT) ───────────────────────────
-import HeaderToken from "@/components/universe/hud/HeaderToken";
-import TargetConsole from "@/components/universe/hud/TargetConsole";
 import ViewSwitcher, { ViewMode } from "@/components/universe/hud/ViewSwitcher";
 import BottomInfoCard from "@/components/universe/hud/BottomInfoCard";
 import DistanceOverlay from "@/components/universe/hud/DistanceOverlay";
 import HabitableZoneToggle from "@/components/universe/hud/HabitableZoneToggle";
 import BottomControlBar from "@/components/universe/hud/BottomControlBar";
+import TopPanel from "@/components/universe/hud/TopPanel";
 import { TIME_PRESETS } from "@/lib/timePresets";
 
 function generatePlanetSeed(name: string): number {
@@ -96,6 +95,13 @@ function SimulatorInner() {
 
   return (
     <div className="hud-viewport bg-black text-white min-h-screen relative font-mono overflow-hidden select-none">
+      <TopPanel
+        onTargetSelect={async (name) => {
+          setTargetName(name);
+          await triggerSpacePipeline(name);
+        }}
+      />
+
       {/* ── A. BACKGROUND 3D MULTI-BODY CANVAS LAYER ─────────────────────── */}
       <div className="absolute inset-0 z-0 pointer-events-auto">
         {systemData && (
@@ -109,19 +115,6 @@ function SimulatorInner() {
             }}
           />
         )}
-      </div>
-
-      {/* ── B. TOP LAYER: HUD NOTIFICATIONS & CONSOLES ───────────────────── */}
-      <div className="absolute top-4 left-4 z-10 pointer-events-none flex flex-col gap-4">
-        <HeaderToken isLive={isPlaying} version="v3.0.0" />
-
-        <TargetConsole
-          defaultTarget={targetName}
-          onLoad={async (name) => {
-            setTargetName(name);
-            await triggerSpacePipeline(name);
-          }}
-        />
       </div>
 
       {/* ── C. HABITABLE ZONE TOGGLE — below HeaderToken, only system view ─ */}
@@ -170,22 +163,6 @@ function SimulatorInner() {
         viewMode={viewMode}
         systemData={systemData}
       />
-
-      {/* ── C. RIGHT LAYER: UNIFIED QUANTUM SPECTRAL TELEMETRY ───────────── */}
-      {/* {systemData && systemData.star_parameters && (
-        <TelemetryPanel
-          data={{
-            targetName: systemData.system_id,
-            mission: systemData.star_parameters.canonical_name ?? "NASA TAP",
-            starMassSolar: systemData.star_parameters.mass_solar ?? 1.0,
-            starRadiusSolar: systemData.star_parameters.radius_solar ?? 1.0,
-            totalDataPoints: systemData.simulation_grid?.length ?? 1,
-            phaseAngleRad: livePhaseAngle,
-          }}
-          isPlaying={isPlaying}
-          onPlayPause={() => setIsPlaying(!isPlaying)}
-        />
-      )} */}
 
       {/* ── H. LOADING VEIL ──────────────────────────────────────────────── */}
       {(!systemData || loading) && (
