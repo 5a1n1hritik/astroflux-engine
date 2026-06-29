@@ -13,12 +13,16 @@ import requests
 import json
 import os
 import logging
+import time
 from pathlib import Path
 
 log = logging.getLogger("datastellar.worker.catalog")
 
 # Output path relative to data-worker directory
 OUTPUT_PATH = Path(__file__).parent.parent.parent.parent / "dashboard" / "src" / "lib" / "constants" / "exoplanet_master.json"
+
+# Cache expiry: 24 hours — NASA database changes slowly
+CACHE_MAX_AGE_SECONDS = 86_400
 
 TAP_URL = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync"
 
@@ -78,14 +82,34 @@ def safe_int(val) -> int | None:
     except (ValueError, TypeError):
         return None
 
+def _is_cache_fresh() -> bool:
+    """
+    Check-Before-Strike:
+    1. File existence check
+    2. Age check — fresh if younger than CACHE_MAX_AGE_SECONDS (24h)
+    """
+    if not OUTPUT_PATH.exists():
+        return False
+    age_seconds = time.time() - OUTPUT_PATH.stat().st_mtime
+    return age_seconds < CACHE_MAX_AGE_SECONDS
+
 
 def run_catalog_dump() -> dict:
     """
-    Main entry point. Fetches NASA TAP, builds catalog, writes JSON.
-    Returns summary dict.
+    Smart cache entry point.
+    Skips NASA fetch if local JSON is fresh (< 24h old).
+    Prevents IP ban / rate limiting on hot reloads and dev restarts.
     """
     log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    log.info("CATALOG DUMP INITIATED ── Fetching NASA TAP bulk payload...")
+
+    # ── CHECK-BEFORE-STRIKE ──────────────────────────────────────────────
+    if _is_cache_fresh():
+        age_hours = (time.time() - OUTPUT_PATH.stat().st_mtime) / 3600
+        log.info(f"CATALOG CACHE HIT ── File is {age_hours:.1f}h old (< 24h). Skipping NASA fetch.")
+        log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        return {"status": "cached", "message": f"Fresh cache ({age_hours:.1f}h old). No fetch needed."}
+
+    log.info("CATALOG CACHE MISS ── Initiating NASA TAP bulk payload...")
 
     try:
         res = requests.get(
