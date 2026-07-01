@@ -2,7 +2,7 @@
 
 import { useState, useEffect, Suspense, useRef } from "react";
 import { useSearchParams } from "next/navigation";
-import OrbitSimulator from "@/components/universe/OrbitSimulator";
+import OrbitSimulator from "@/components/universe/orbit-simulator";
 
 // ── IMPORT MODULAR HUD COMPONENTS (SRP COMPLIANT) ───────────────────────────
 import ViewSwitcher, { ViewMode } from "@/components/universe/hud/ViewSwitcher";
