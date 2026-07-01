@@ -11,7 +11,7 @@ import {
 import {
   createAtmosphereMaterial,
   createPlanetMaterial,
-} from "../temp/planet/PlanetShaderMaterial";
+} from "./graphics/planets/PlanetShaderMaterial";
 
 const AU_TO_WS = 32.0; // Dynamic scale: 1 AU -> 32 WebGL Units to easily space out 8 planets
 
@@ -56,6 +56,9 @@ interface OrbitSimulatorProps {
   planetSeed: number;
   onFrameUpdate: (phaseAngle: number) => void;
   showHabitableZone?: boolean;
+  viewMode: "planet" | "system" | "star";
+  selectedPlanet?: string; // planet_name
+  onPlanetSelect?: (name: string) => void;
 }
 
 export default function OrbitSimulator({
@@ -64,6 +67,9 @@ export default function OrbitSimulator({
   planetSeed,
   onFrameUpdate,
   showHabitableZone = true,
+  viewMode,
+  selectedPlanet,
+  onPlanetSelect,
 }: OrbitSimulatorProps) {
   const simulationGrid = systemData?.simulation_grid || [];
   const starParams = systemData?.star_parameters || {};
@@ -87,10 +93,26 @@ export default function OrbitSimulator({
 
   // Reference track list array to map all recursive planet objects
   const planetMeshesRef = useRef<{ name: string; mesh: THREE.Mesh }[]>([]);
+  const labelsRef = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  const starSphereRRef = useRef<number>(1.2);
 
   const wasmRef = useRef(wasmEngine);
   const timeRef = useRef(currentFrameTime);
   const callbackRef = useRef(onFrameUpdate);
+  const viewModeRef = useRef(viewMode);
+  const selectedPlanetRef =
+    useRef(selectedPlanet ?? "");
+
+  selectedPlanetRef.current =
+      selectedPlanet ?? "";
+
+  const raycasterRef =
+      useRef(new THREE.Raycaster());
+
+  const mouseRef =
+      useRef(new THREE.Vector2());
+  viewModeRef.current = viewMode; // always latest, no re-mount
 
   wasmRef.current = wasmEngine;
   timeRef.current = currentFrameTime;
@@ -119,7 +141,7 @@ export default function OrbitSimulator({
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(45, W / H, 0.01, 1200);
-    camera.position.set(0, 60, 110); // Elevated viewport standard to survey the entire flat disk plane
+    camera.position.set(0, 120, 200); // Elevated viewport standard to survey the entire flat disk plane
     cameraRef.current = camera;
 
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -171,6 +193,7 @@ export default function OrbitSimulator({
     const coreMesh = new THREE.Mesh(coreGeo, coreMat);
     coreMesh.name = "starCore";
     scene.add(coreMesh);
+    starSphereRRef.current = sphereR;
     starMatRef.current = coreMat;
 
     const coronaSize = sphereR * 7.5;
@@ -231,6 +254,10 @@ export default function OrbitSimulator({
       const planetMesh = new THREE.Mesh(planetGeo, planetMat);
       planetMesh.name = `planet_${planet.planet_name}`;
       scene.add(planetMesh);
+      planetMesh.userData.planetName =
+    planet.planet_name;
+
+planetMesh.userData.clickable = true;
 
       const atmoGeo = new THREE.SphereGeometry(
         Math.max(0.15, planetRad * 0.12) * 1.15,
@@ -248,6 +275,25 @@ export default function OrbitSimulator({
         name: planet.planet_name,
         mesh: planetMesh,
       });
+
+      // Label div create karo
+      const labelEl = document.createElement("div");
+      labelEl.style.cssText = `
+        position: absolute;
+        color: rgba(203,213,225,0.80);
+        font-family: var(--font-mono, 'Space Mono', monospace);
+        font-size: 9px;
+        letter-spacing: 0.08em;
+        pointer-events: none;
+        white-space: nowrap;
+        text-shadow: 0 1px 4px rgba(0,0,0,0.90);
+        background: rgba(2,4,9,0.45);
+        padding: 1px 5px;
+        border-radius: 2px;
+      `;
+      labelEl.textContent = planet.planet_name;
+      container.appendChild(labelEl);
+      labelsRef.current.set(planet.planet_name, labelEl);
     });
 
     const onResize = () => {
@@ -268,6 +314,8 @@ export default function OrbitSimulator({
       window.removeEventListener("resize", onResize);
       controls.dispose();
       renderer.dispose();
+      labelsRef.current.forEach(el => el.remove());
+      labelsRef.current.clear();
       if (container.contains(renderer.domElement))
         container.removeChild(renderer.domElement);
       sceneRef.current = null;
@@ -287,6 +335,14 @@ export default function OrbitSimulator({
   function startRenderLoop() {
     const clock = new THREE.Clock();
 
+    // ── PRE-ALLOCATED VECTORS (zero GC pressure in render loop) ──
+    const _planetPos    = new THREE.Vector3();
+    const _direction    = new THREE.Vector3();
+    const _targetCamPos = new THREE.Vector3();
+    const _barycenter   = new THREE.Vector3();
+    const _starTarget   = new THREE.Vector3(0, 0, 0);
+    const _screenPos = new THREE.Vector3();
+
     function tick() {
       rafRef.current = requestAnimationFrame(tick);
       const elapsed = clock.getElapsedTime();
@@ -299,6 +355,41 @@ export default function OrbitSimulator({
       if (!scene || !renderer || !camera) return;
 
       controls?.update();
+
+      // ── DYNAMIC CAMERA SYSTEM ────────────────────────────────────────
+      const mode = viewModeRef.current;
+      const selectedNode =
+planetMeshesRef.current.find(
+    p=>p.name===selectedPlanetRef.current
+) ?? planetMeshesRef.current[0];
+
+      // Planet view — REPLACE existing block:
+      if (mode === "planet" && selectedNode) {
+        selectedNode  .mesh.getWorldPosition(_planetPos);
+        // Smooth direction — length check karo pehle (origin pe divide-by-zero avoid)
+        const dist = _planetPos.length();
+        if (dist > 0.1) {
+          _direction.copy(_planetPos).divideScalar(dist); // same as normalize but explicit
+          _targetCamPos.copy(_planetPos).addScaledVector(_direction, 8);
+          camera.position.lerp(_targetCamPos, 0.04); // 0.04 — slightly slower = smoother quadrant cross
+          controls!.target.lerp(_planetPos, 0.04);
+        }
+
+      // System view:
+      } else if (mode === "system") {
+        const driftTime = elapsed * 0.08;
+        _barycenter.set(Math.sin(driftTime) * 1.5, 0, Math.cos(driftTime) * 1.5);
+        controls!.target.lerp(_barycenter, 0.02);
+
+      // Star view:
+      } else if (mode === "star") {
+        const r = starSphereRRef.current;
+        _targetCamPos.set(0, r * 2.5, r * 7);
+        camera.position.lerp(_targetCamPos, 0.04);
+        controls!.target.lerp(_starTarget, 0.04);
+      }
+      // ── END CAMERA SYSTEM ────────────────────────────────────────────
+
       if (starMatRef.current) starMatRef.current.uniforms.uTime.value = elapsed;
       if (coronaMatRef.current)
         coronaMatRef.current.uniforms.uTime.value = elapsed;
@@ -359,6 +450,30 @@ export default function OrbitSimulator({
           }
         }
       }
+      const W = renderer.domElement.clientWidth;
+      const H = renderer.domElement.clientHeight;
+
+      planetMeshesRef.current.forEach(({ name, mesh }) => {
+          const label = labelsRef.current.get(name);
+          if (!label) return;
+
+          _screenPos.setFromMatrixPosition(mesh.matrixWorld);
+          _screenPos.project(camera);
+
+          if (_screenPos.z > 1) {
+              label.style.display = "none";
+              return;
+          }
+
+          label.style.display = "block";
+
+          label.style.left =
+              `${(_screenPos.x * .5 + .5) * W + 6}px`;
+
+          label.style.top =
+              `${(1 - (_screenPos.y * .5 + .5)) * H - 4}px`;
+      });
+
       renderer.render(scene, camera);
     }
     rafRef.current = requestAnimationFrame(tick);
@@ -419,8 +534,8 @@ function buildOrbitPath(
     points.push(
       new THREE.Vector3(
         x_raw,
-        y_raw * Math.cos(inclinationRad),
         y_raw * Math.sin(inclinationRad),
+        y_raw * Math.cos(inclinationRad),
       ),
     );
   }

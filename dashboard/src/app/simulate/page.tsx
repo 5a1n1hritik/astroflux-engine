@@ -35,6 +35,7 @@ function SimulatorInner() {
   const [isPlaying, setIsPlaying] = useState(true);
 
   const [viewMode, setViewMode] = useState<ViewMode>("planet");
+  const [selectedPlanet, setSelectedPlanet] = useState<string>("");
   const [habitableZone, setHabitableZone] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [rateIndex, setRateIndex] = useState<number>(0);
@@ -112,6 +113,12 @@ function SimulatorInner() {
             showHabitableZone={habitableZone}
             onFrameUpdate={(phase) => {
               setLivePhaseAngle(phase);
+            }}
+            viewMode={viewMode}
+            selectedPlanet={selectedPlanet}
+            onPlanetSelect={(name) => {
+              setSelectedPlanet(name);
+              setViewMode("planet");
             }}
           />
         )}

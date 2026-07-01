@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import StarGlViewport from "@/components/temp/star/StarGlViewport";
-import PlanetGlViewport from "@/components/temp/planet/PlanetGlViewport";
+import PlanetGlViewport from "@/components/universe/graphics/planets/PlanetGlViewport";
 
 // Is baseline registry configuration map ko page.tsx me overwrite kar lijiye
 const STELLAR_CATALOG = {
