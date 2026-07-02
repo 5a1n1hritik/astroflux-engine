@@ -74,9 +74,9 @@ export const STARFIELD_LAYERS = [
 // ── Habitable zone torus ──────────────────────────────────────────────────
 export const HABITABLE_ZONE_INNER_LUM_DIVISOR = 1.1;
 export const HABITABLE_ZONE_OUTER_LUM_DIVISOR = 0.53;
-export const HABITABLE_ZONE_MAX_TUBE_RADIUS   = 0.6;
+// export const HABITABLE_ZONE_MAX_TUBE_RADIUS   = 2.0;
 export const HABITABLE_ZONE_MAX_MID_RADIUS    = 400;
-export const HABITABLE_ZONE_OPACITY           = 0.012;
+export const HABITABLE_ZONE_OPACITY           = 0.06;
 
 // ── Planet classification color presets (by mass/temperature) ───────────
 export const PLANET_COLOR_GAS_GIANT   = { base: "#c8a96e", atmo: "#22d3ee" };
