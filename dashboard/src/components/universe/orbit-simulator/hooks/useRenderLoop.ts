@@ -172,6 +172,12 @@ export function useRenderLoop(params: UseRenderLoopParams): void {
         if (phaseAngle !== null) onFrameUpdate(phaseAngle);
       }
 
+      // ── 4b. Axial rotation per planet ──────────────────────────────────
+      for (const tracked of planetMeshesRef.current ?? []) {
+        const speed = tracked.mesh.userData.rotationSpeed as number | undefined;
+        if (speed) tracked.mesh.rotation.y += speed;
+      }
+
       // ── 5. Label screen-space projection ───────────────────────────────
       const container = mountRef.current;
       if (vectors && labelsRef.current.size > 0 && container) {

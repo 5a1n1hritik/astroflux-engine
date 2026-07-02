@@ -87,3 +87,9 @@ export const PLANET_COLOR_DEFAULT     = { base: "#8b6344", atmo: "#3a8cf5" };
 export const GAS_GIANT_MASS_THRESHOLD = 10.0;
 export const HOT_TEMP_THRESHOLD_K     = 450.0;
 export const COLD_TEMP_THRESHOLD_K    = 180.0;
+
+// ── System galactic tilt degree angle ──────────────────────────────────────
+export const SYSTEM_GALACTIC_TILT_DEG = -120;
+
+// ── Planet rotation speed  ──────────────────────────────────────
+export const PLANET_BASE_ROTATION_SPEED = 0.008; // base rad/frame at period=10days

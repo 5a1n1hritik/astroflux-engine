@@ -41,7 +41,7 @@ export interface OrbitPathParams {
  * Builds and attaches a single orbit ellipse line to the scene.
  * Returns the created Line so callers can name/track it if needed.
  */
-export function buildOrbitPath(scene: THREE.Scene, params: OrbitPathParams): THREE.LineLoop {
+export function buildOrbitPath(parent: THREE.Object3D, params: OrbitPathParams): THREE.LineLoop {
   const { semiMajorAu, eccentricity, inclinationDeg, planetIndex } = params;
 
   const a = semiMajorAu * AU_TO_WS;
@@ -81,7 +81,7 @@ export function buildOrbitPath(scene: THREE.Scene, params: OrbitPathParams): THR
   const line = new THREE.LineLoop(geo, mat);
   line.name = `orbitPath_${planetIndex}`;
   line.computeLineDistances();
-  scene.add(line);
+  parent.add(line);
 
   return line;
 }

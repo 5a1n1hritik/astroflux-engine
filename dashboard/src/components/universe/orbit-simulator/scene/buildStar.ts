@@ -49,28 +49,28 @@ function resolveStarPreset(temperatureK: number) {
  * Builds star core + corona + point light into the scene.
  * Returns mesh/material refs and the computed world-space sphere radius.
  */
-export function buildStar(scene: THREE.Scene, starParams: StarParams): StarBuildResult {
+export function buildStar(parent: THREE.Object3D, starParams: StarParams): StarBuildResult {
   const temperatureK = starParams.temperature_kelvin ?? 5778;
   const radiusSolar  = starParams.radius_solar ?? 1.0;
   const preset       = resolveStarPreset(temperatureK);
 
   const pointLight = new THREE.PointLight("#ffdf90", 4.0, 300, 0.5);
   pointLight.position.set(0, 0, 0);
-  scene.add(pointLight);
+  parent.add(pointLight);
 
   const sphereRadiusWS = Math.max(STAR_MIN_RADIUS, radiusSolar * STAR_RADIUS_SCALE);
   const coreGeo = new THREE.SphereGeometry(sphereRadiusWS, STAR_SPHERE_SEGMENTS, STAR_SPHERE_SEGMENTS);
   const coreMat = createStarCoreMaterial(preset);
   const coreMesh = new THREE.Mesh(coreGeo, coreMat);
   coreMesh.name = "starCore";
-  scene.add(coreMesh);
+  parent.add(coreMesh);
 
   const coronaSize = sphereRadiusWS * CORONA_SIZE_SCALE;
   const coronaGeo = new THREE.PlaneGeometry(coronaSize, coronaSize);
   const coronaMat = createStarCoronaMaterial(preset);
   const coronaMesh = new THREE.Mesh(coronaGeo, coronaMat);
   coronaMesh.name = "starCorona";
-  scene.add(coronaMesh);
+  parent.add(coronaMesh);
 
   return { coreMesh, coronaMesh, coreMat, coronaMat, pointLight, sphereRadiusWS };
 }

@@ -31,6 +31,7 @@ import {
   GAS_GIANT_MASS_THRESHOLD,
   HOT_TEMP_THRESHOLD_K,
   COLD_TEMP_THRESHOLD_K,
+  PLANET_BASE_ROTATION_SPEED,
 } from "../constants";
 
 function resolvePlanetPalette(massEarth: number, eqTempK: number) {
@@ -40,13 +41,27 @@ function resolvePlanetPalette(massEarth: number, eqTempK: number) {
   return PLANET_COLOR_DEFAULT;
 }
 
+function estimateObliquityRad(massEarth: number, eqTempK: number): number {
+  // Hot Jupiters — tidally locked, near-zero tilt
+  if (massEarth > GAS_GIANT_MASS_THRESHOLD && eqTempK > HOT_TEMP_THRESHOLD_K)
+    return THREE.MathUtils.degToRad(3);
+  // Gas Giants — moderate tilt like Jupiter/Saturn
+  if (massEarth > GAS_GIANT_MASS_THRESHOLD)
+    return THREE.MathUtils.degToRad(27);
+  // Ice Giants — high tilt like Uranus
+  if (eqTempK < COLD_TEMP_THRESHOLD_K)
+    return THREE.MathUtils.degToRad(82);
+  // Super-Earths / Rocky — Earth-like range
+  return THREE.MathUtils.degToRad(20 + (massEarth % 7) * 4);
+}
+
 /**
  * Builds a planet mesh (+ atmosphere + glow), attaches it to the scene,
  * and tags userData for click-to-select interaction.
  * Returns the core mesh — caller tracks it in planetMeshesRef.
  */
 export function buildPlanet(
-  scene: THREE.Scene,
+  parent: THREE.Object3D,
   planet: PlanetConfig,
   planetSeed: number,
 ): THREE.Mesh {
@@ -90,7 +105,18 @@ export function buildPlanet(
   const glowSprite = buildPlanetGlow();
   planetMesh.add(glowSprite);
 
-  scene.add(planetMesh);
+  // Axial tilt wrapper — rotates on Z axis in local space
+  const tiltGroup = new THREE.Object3D();
+  tiltGroup.name = `tiltGroup_${planet.planet_name}`;
+  const obliquity = estimateObliquityRad(planetMass, eqTemp);
+  tiltGroup.rotation.z = obliquity;
+  tiltGroup.add(planetMesh);
+  parent.add(tiltGroup);
+
+  // Store rotation speed in userData for render loop access
+  const rotSpeed = PLANET_BASE_ROTATION_SPEED * (10 / Math.max(planet.orbital_period_days, 1));
+  planetMesh.userData.rotationSpeed = rotSpeed;
+  planetMesh.userData.obliquityRad  = obliquity;
 
   return planetMesh;
 }

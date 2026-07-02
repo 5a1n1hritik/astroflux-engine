@@ -25,7 +25,7 @@ import {
  * Returns null (and skips attaching) if computed geometry would be degenerate
  * or absurdly large — guards against bad luminosity data.
  */
-export function buildHabitableZone(scene: THREE.Scene, luminosityLog: number): THREE.Mesh | null {
+export function buildHabitableZone(parent: THREE.Object3D, luminosityLog: number): THREE.Mesh | null {
   const L = Math.pow(10, luminosityLog);
   const innerAU = Math.sqrt(L / HABITABLE_ZONE_INNER_LUM_DIVISOR) * AU_TO_WS;
   const outerAU = Math.sqrt(L / HABITABLE_ZONE_OUTER_LUM_DIVISOR) * AU_TO_WS;
@@ -48,7 +48,7 @@ export function buildHabitableZone(scene: THREE.Scene, luminosityLog: number): T
   const torus = new THREE.Mesh(geo, mat);
   torus.name = "habitableZone";
   torus.rotation.x = Math.PI / 2;
-  scene.add(torus);
+  parent.add(torus);
 
   return torus;
 }

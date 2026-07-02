@@ -84,7 +84,7 @@ export function applySolvedFrame(
       solvedPlanet.position_y * AU_TO_WS, // matches buildOrbitPath z-mapping
     );
 
-    tracked.mesh.rotation.y += 0.01;
+    // tracked.mesh.rotation.y += 0.01;
 
     const mat = tracked.mesh.material as THREE.ShaderMaterial;
     if (mat?.uniforms?.uTime) {

@@ -44,6 +44,7 @@ import {
   INITIAL_CAMERA_FAR,
   SYSTEM_VIEW_HEIGHT_MULT,
   SYSTEM_VIEW_DEPTH_MULT,
+  SYSTEM_GALACTIC_TILT_DEG,
 } from "../constants";
 
 export interface ThreeSceneRefs {
@@ -56,6 +57,7 @@ export interface ThreeSceneRefs {
   starBuildRef:     React.RefObject<StarBuildResult | null>;
   vectorPoolRef:    React.RefObject<CameraVectorPool | null>;
   outerOrbitRadiusWSRef: React.RefObject<number>;
+  systemGroupRef:   React.RefObject<THREE.Group | null>;
 }
 
 export function useThreeScene(
@@ -75,6 +77,7 @@ export function useThreeScene(
   const labelsRef        = useRef<Map<string, HTMLDivElement>>(new Map());
   const starBuildRef     = useRef<StarBuildResult | null>(null);
   const vectorPoolRef    = useRef<CameraVectorPool | null>(null);
+  const systemGroupRef = useRef<THREE.Group | null>(null);
   const outerOrbitRadiusWSRef = useRef<number>(64);
 
   useEffect(() => {
@@ -129,6 +132,16 @@ export function useThreeScene(
     // ── Ambient light ────────────────────────────────────────────────────
     scene.add(new THREE.AmbientLight("#0d1a2e", 0.45));
 
+    // ── System Group (galactic tilt wrapper) ────────────────────────────
+    const systemGroup = new THREE.Group();
+
+    // Galactic orientation: real solar systems are tilted relative to
+    // the viewing plane. 60° X-tilt gives a realistic non-flat disk view.
+    systemGroup.rotation.x = THREE.MathUtils.degToRad(SYSTEM_GALACTIC_TILT_DEG * 0.5);
+    systemGroup.rotation.z = THREE.MathUtils.degToRad(SYSTEM_GALACTIC_TILT_DEG * 0.3);
+    scene.add(systemGroup);
+    systemGroupRef.current = systemGroup;
+
     // ── Pre-allocate camera vector pool ──────────────────────────────────
     vectorPoolRef.current = createCameraVectorPool();
 
@@ -136,25 +149,25 @@ export function useThreeScene(
     buildStarfield(scene);
 
     // ── Host star ────────────────────────────────────────────────────────
-    const starBuild = buildStar(scene, systemData.star_parameters);
+    const starBuild = buildStar(systemGroup, systemData.star_parameters);
     starBuildRef.current = starBuild;
 
     // ── Habitable zone ───────────────────────────────────────────────────
-    const hz = buildHabitableZone(scene, systemData.star_parameters.luminosity_log ?? 0.0);
+    const hz = buildHabitableZone(systemGroup, systemData.star_parameters.luminosity_log ?? 0.0);
     if (hz) hz.visible = showHabitableZone;
 
     // ── Orbit paths + planet meshes ──────────────────────────────────────
     planetMeshesRef.current = [];
 
     grid.forEach((planet, idx) => {
-      buildOrbitPath(scene, {
+      buildOrbitPath(systemGroup, {
         semiMajorAu:    planet.semi_major_axis_au,
         eccentricity:   planet.eccentricity,
         inclinationDeg: planet.inclination_degrees,
         planetIndex:    idx,
       });
 
-      const mesh = buildPlanet(scene, planet, planetSeed);
+      const mesh = buildPlanet(systemGroup, planet, planetSeed);
       planetMeshesRef.current.push({ name: planet.planet_name, mesh });
     });
 
@@ -196,6 +209,7 @@ export function useThreeScene(
       controlsRef.current = null;
       starBuildRef.current = null;
       vectorPoolRef.current = null;
+      systemGroupRef.current = null;
       planetMeshesRef.current = [];
     };
   }, [systemData, isReady, planetSeed]);
@@ -217,6 +231,7 @@ export function useThreeScene(
     labelsRef,
     starBuildRef,
     vectorPoolRef,
+    systemGroupRef,
     outerOrbitRadiusWSRef,
   };
 }
