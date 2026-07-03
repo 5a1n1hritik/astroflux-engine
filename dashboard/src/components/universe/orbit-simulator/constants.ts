@@ -39,8 +39,8 @@ export const CORONA_SIZE_SCALE   = 7.5;
 // Zoom distance is computed relative to the selected planet's mesh radius,
 // not a fixed world-unit number — keeps framing consistent across vastly
 // different planet sizes (Earth-like vs Gas Giant).
-export const PLANET_VIEW_ZOOM_RADIUS_MULT = 12;
-export const PLANET_VIEW_MIN_ZOOM         = 4;
+export const PLANET_VIEW_ZOOM_RADIUS_MULT = 6;
+export const PLANET_VIEW_MIN_ZOOM         = 2;
 export const PLANET_VIEW_CAM_LERP         = 0.04;
 export const PLANET_VIEW_TARGET_LERP      = 0.04;
 
@@ -89,7 +89,7 @@ export const HOT_TEMP_THRESHOLD_K     = 450.0;
 export const COLD_TEMP_THRESHOLD_K    = 180.0;
 
 // ── System galactic tilt degree angle ──────────────────────────────────────
-export const SYSTEM_GALACTIC_TILT_DEG = -120;
+export const SYSTEM_GALACTIC_TILT_DEG = 20;
 
 // ── Planet rotation speed  ──────────────────────────────────────
 export const PLANET_BASE_ROTATION_SPEED = 0.008; // base rad/frame at period=10days

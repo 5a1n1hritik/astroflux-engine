@@ -91,6 +91,9 @@ export function useRenderLoop(params: UseRenderLoopParams): void {
   } = params;
 
   const rafRef = useRef<number>(0);
+  const prevViewModeRef       = useRef<ViewMode>("system");
+  const transitionProgressRef = useRef<number>(999); // start as done
+  const TRANSITION_FRAMES     = 90; // ~1.5s at 60fps
 
   useEffect(() => {
     if (!systemData || !isReady) return;
@@ -131,13 +134,31 @@ export function useRenderLoop(params: UseRenderLoopParams): void {
           starSphereRadiusWS: starBuild?.sphereRadiusWS ?? 1.2,
         };
 
-        applyCameraStrategy(viewModeRef.current, ctx);
+        // Detect view mode change — reset transition counter
+        if (prevViewModeRef.current !== viewModeRef.current) {
+          prevViewModeRef.current = viewModeRef.current;
+          transitionProgressRef.current = 0;
+        }
+
+        // Apply camera strategy only during transition window
+        // After transition — OrbitControls has full freedom
+        if (transitionProgressRef.current < TRANSITION_FRAMES) {
+          transitionProgressRef.current++;
+          applyCameraStrategy(viewModeRef.current, ctx);
+        } else if (viewModeRef.current === "planet" && selectedNode) {
+          // Always keep controls.target on planet — but camera is free
+          selectedNode.mesh.getWorldPosition(vectors.planetPos);
+          controls.target.lerp(vectors.planetPos, 0.04);
+        }
       }
 
       // ── 3. Star shader uniforms ─────────────────────────────────────────
       if (starBuild) {
         starBuild.coreMat.uniforms.uTime.value = elapsed;
         starBuild.coronaMat.uniforms.uTime.value = elapsed;
+
+        const camDistToStar = camera.position.length();
+        starBuild.coronaMat.uniforms.uCameraDistance.value = camDistToStar;
 
         // Keep corona billboard facing camera
         const coronaMesh = scene.getObjectByName("starCorona") as
@@ -176,6 +197,28 @@ export function useRenderLoop(params: UseRenderLoopParams): void {
       for (const tracked of planetMeshesRef.current ?? []) {
         const speed = tracked.mesh.userData.rotationSpeed as number | undefined;
         if (speed) tracked.mesh.rotation.y += speed;
+      }
+
+      // ── 4c. Adaptive screen-space planet scaling ────────────────────────
+      const currentViewMode = viewModeRef.current;
+      for (const tracked of planetMeshesRef.current ?? []) {
+        // const geo = tracked.mesh.geometry as THREE.SphereGeometry;
+        // const baseRadius = geo.parameters?.radius ?? 0.15;
+        if (!vectors) continue;
+
+        if (currentViewMode === "system") {
+          // System view: scale up so planets stay visible as dots when zoomed out
+          tracked.mesh.getWorldPosition(vectors.screenPos); // reuse pre-allocated vector
+          const dist = camera.position.distanceTo(vectors.screenPos);
+          const scaleFactor = Math.max(1.0, dist * 0.012);
+          tracked.mesh.scale.setScalar(scaleFactor);
+        } else if (currentViewMode === "planet") {
+          // Planet view: reset scale — real size only
+          tracked.mesh.scale.setScalar(1.0);
+        } else {
+          // Star view: shrink planets so star dominates
+          tracked.mesh.scale.setScalar(0.3);
+        }
       }
 
       // ── 5. Label screen-space projection ───────────────────────────────

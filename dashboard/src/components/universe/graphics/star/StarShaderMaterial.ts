@@ -151,6 +151,7 @@ const coronaFragmentShader = /* glsl */ `
   uniform float uTime;
   uniform vec3  uCoronaColor;
   uniform float uCoreRadius;
+  uniform float uCameraDistance;
   varying vec2 vUv;
 
   void main() {
@@ -170,8 +171,9 @@ const coronaFragmentShader = /* glsl */ `
     vec3 finalGlow = uCoronaColor * innerGlow * (0.90 + 0.05 * pulse1);
     finalGlow += uCoronaColor * outerGlow * (0.32 + 0.04 * pulse2);
 
-    float alpha = innerGlow * 0.80 + outerGlow * 0.28;
-    gl_FragColor = vec4(finalGlow, clamp(alpha * coreCut, 0.0, 1.0));
+    float glowMultiplier = clamp(uCameraDistance * 0.008, 1.0, 4.0);
+    float alpha = (innerGlow * 0.80 + outerGlow * 0.28) * glowMultiplier;
+    gl_FragColor = vec4(finalGlow * glowMultiplier, clamp(alpha * coreCut, 0.0, 1.0));
   }
 `;
 
@@ -202,6 +204,7 @@ export function createStarCoronaMaterial(preset: ShaderPresetOptions): THREE.Sha
       uTime:        { value: 0.0 },
       uCoronaColor: { value: new THREE.Color(preset.corona) },
       uCoreRadius:  { value: 0.12 }, // Scaled slightly to fit perfectly behind the outer sphere bounding box edge radius limits
+      uCameraDistance: { value: 100.0 },
     },
     blending:    THREE.AdditiveBlending,
     transparent: true,

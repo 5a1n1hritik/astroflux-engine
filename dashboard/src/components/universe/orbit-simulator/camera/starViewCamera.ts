@@ -33,6 +33,9 @@ export function applyStarViewCamera(ctx: CameraContext): void {
     starSphereRadiusWS * STAR_VIEW_DEPTH_MULT,
   );
 
+  controls.minDistance = starSphereRadiusWS * 1.1; // not go inside corona
+  controls.maxDistance = starSphereRadiusWS * 12;
+
   camera.position.lerp(targetCamPos, STAR_VIEW_CAM_LERP);
   controls.target.lerp(starTarget, STAR_VIEW_TARGET_LERP);
 }

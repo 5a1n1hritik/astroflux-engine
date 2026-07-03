@@ -35,6 +35,7 @@ import type {
   StarSystemNode,
   TrackedPlanetMesh,
   CameraVectorPool,
+  ViewMode,
 } from "../types";
 
 import {
@@ -67,6 +68,7 @@ export function useThreeScene(
   showHabitableZone: boolean,
   isReady: boolean,
   onPlanetLabelClick: (name: string) => void,
+  showViewMode: ViewMode,
 ): ThreeSceneRefs {
 
   const sceneRef         = useRef<THREE.Scene | null>(null);
@@ -91,6 +93,7 @@ export function useThreeScene(
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
       powerPreference: "high-performance",
+      logarithmicDepthBuffer: true,
     });
     renderer.setSize(W, H);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -221,6 +224,29 @@ export function useThreeScene(
     const torus = scene.getObjectByName("habitableZone");
     if (torus) torus.visible = showHabitableZone;
   }, [showHabitableZone]);
+
+  // ── Dynamic frustum clipping per view mode ───────────────────────
+  useEffect(() => {
+  const camera = cameraRef.current;
+  if (!camera) return;
+
+  switch (showViewMode) {
+    case "planet":
+      camera.near = 0.01;         // Kafi close zoom support karega[cite: 7]
+      camera.far  = 2000;         // Baaki planets aur starfield bhi dikhta rahega[cite: 7, 9]
+      break;
+    case "star":
+      camera.near = 0.1;
+      camera.far  = 2000;
+      break;
+    case "system":
+    default:
+      camera.near = 1.0;
+      camera.far  = 5000;         // System view me door tak ka edge cover hoga[cite: 7]
+      break;
+  }
+  camera.updateProjectionMatrix();
+}, [showViewMode]);
 
   return {
     sceneRef,

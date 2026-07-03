@@ -33,6 +33,9 @@ export function applySystemViewCamera(ctx: CameraContext): void {
   const { camera, controls, vectors, elapsed, outerOrbitRadiusWS } = ctx;
   const { barycenter, targetCamPos } = vectors;
 
+  ctx.controls.minDistance = 0;
+  ctx.controls.maxDistance = Infinity;
+
   // ── Target drift — subtle orbital sweep around system barycenter ──────
   const targetDriftTime = elapsed * SYSTEM_VIEW_DRIFT_SPEED;
   barycenter.set(

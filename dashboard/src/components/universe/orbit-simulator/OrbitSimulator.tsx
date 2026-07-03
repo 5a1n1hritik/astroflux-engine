@@ -67,15 +67,16 @@ export default function OrbitSimulator({
     showHabitableZone,
     isReady,
     (planetName) => onPlanetSelect?.(planetName),
+    viewMode,
   );
 
   // ── Click-to-select (canvas raycasting) ────────────────────────────────
   usePlanetRaycaster({
-    canvasEl:        sceneRefs.rendererRef.current?.domElement ?? null,
-    camera:          sceneRefs.cameraRef.current,
+    canvasEl: sceneRefs.rendererRef.current?.domElement ?? null,
+    camera:   sceneRefs.cameraRef.current,
     planetMeshesRef: sceneRefs.planetMeshesRef,
     onPlanetSelect,
-    enabled:         isReady,
+    enabled:  isReady && sceneRefs.rendererRef.current !== null,
   });
 
   // ── Per-frame render loop ───────────────────────────────────────────────

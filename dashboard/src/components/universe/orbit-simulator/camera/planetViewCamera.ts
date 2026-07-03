@@ -49,7 +49,10 @@ export function applyPlanetViewCamera(ctx: CameraContext): void {
   const meshRadius = geometry.parameters?.radius ?? 0.5;
   const zoomDistance = Math.max(meshRadius * PLANET_VIEW_ZOOM_RADIUS_MULT, PLANET_VIEW_MIN_ZOOM);
 
-  targetCamPos.copy(planetPos).addScaledVector(direction, zoomDistance);
+  targetCamPos.copy(planetPos).addScaledVector(direction, -zoomDistance);
+
+  controls.minDistance = meshRadius * 1.5;
+  controls.maxDistance = zoomDistance * 1.2;
 
   camera.position.lerp(targetCamPos, PLANET_VIEW_CAM_LERP);
   controls.target.lerp(planetPos, PLANET_VIEW_TARGET_LERP);
